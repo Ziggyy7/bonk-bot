@@ -91,51 +91,273 @@ def get_sol_balance(wallet_address):
         logging.error(f"Error fetching SOL balance: {e}")
         return 0.0
 
-def fetch_token_info(contract_address):
+def fetch_from_dexscreener(contract_address):
+    """Try fetching from DexScreener API"""
     try:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}"
-        logging.info(f"Fetching data from: {url}")
+        logging.info(f"[DexScreener] Fetching: {contract_address}")
         
-        res = requests.get(url, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        res = requests.get(url, headers=headers, timeout=12)
+        
+        if res.status_code != 200:
+            logging.warning(f"[DexScreener] Status {res.status_code}")
+            return None
+        
         data = res.json()
         
-        logging.info(f"API Response: {data}")
+        if not data or "pairs" not in data or len(data["pairs"]) == 0:
+            logging.warning(f"[DexScreener] No pairs found")
+            return None
         
-        if "pairs" in data and len(data["pairs"]) > 0:
-            # Get the pair with highest liquidity (usually most relevant)
-            pairs_sorted = sorted(data["pairs"], 
-                                key=lambda x: float(x.get("liquidity", {}).get("usd", 0) or 0), 
-                                reverse=True)
-            pair = pairs_sorted[0]
-            
-            # Extract data with proper error handling
-            price = pair.get("priceUsd", "0")
-            liquidity_data = pair.get("liquidity", {})
-            liquidity = liquidity_data.get("usd", 0) if liquidity_data else 0
-            
-            # Market cap calculation
-            fdv = pair.get("fdv", 0)  # Fully Diluted Valuation
-            market_cap = pair.get("marketCap", fdv)  # Use marketCap if available, else FDV
-            
-            logging.info(f"Extracted - Price: {price}, Liquidity: {liquidity}, MarketCap: {market_cap}")
-            
-            return {
-                "price": format_number(price),
-                "liquidity": format_number(liquidity),
-                "market_cap": format_number(market_cap),
-                "token_name": pair.get("baseToken", {}).get("name", "Unknown"),
-                "token_symbol": pair.get("baseToken", {}).get("symbol", "???")
-            }
+        # Get the pair with highest liquidity
+        pairs_sorted = sorted(
+            data["pairs"], 
+            key=lambda x: float(x.get("liquidity", {}).get("usd", 0) or 0), 
+            reverse=True
+        )
+        
+        pair = pairs_sorted[0]
+        
+        price = pair.get("priceUsd", "0")
+        if not price or price == "0":
+            logging.warning(f"[DexScreener] Invalid price")
+            return None
+        
+        liquidity_data = pair.get("liquidity", {})
+        liquidity = liquidity_data.get("usd", 0) if liquidity_data else 0
+        fdv = pair.get("fdv", 0)
+        market_cap = pair.get("marketCap", fdv)
+        
+        base_token = pair.get("baseToken", {})
+        
+        logging.info(f"[DexScreener] ✅ Success - {base_token.get('symbol', '???')}")
+        
+        return {
+            "price": price,
+            "liquidity": liquidity,
+            "market_cap": market_cap,
+            "token_name": base_token.get("name", "Unknown"),
+            "token_symbol": base_token.get("symbol", "???"),
+            "source": "DexScreener"
+        }
+        
     except Exception as e:
-        logging.error(f"Error fetching token info: {e}")
+        logging.error(f"[DexScreener] Error: {e}")
+        return None
+
+def fetch_from_birdeye(contract_address):
+    """Try fetching from Birdeye API"""
+    try:
+        # Birdeye public API endpoint (no key needed for basic data)
+        url = f"https://public-api.birdeye.so/defi/token_overview?address={contract_address}"
+        logging.info(f"[Birdeye] Fetching: {contract_address}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'X-API-KEY': 'public'  # Public endpoint
+        }
+        
+        res = requests.get(url, headers=headers, timeout=12)
+        
+        if res.status_code != 200:
+            logging.warning(f"[Birdeye] Status {res.status_code}")
+            return None
+        
+        data = res.json()
+        
+        if not data or "data" not in data:
+            logging.warning(f"[Birdeye] No data")
+            return None
+        
+        token_data = data["data"]
+        
+        price = token_data.get("price")
+        if not price or price == 0:
+            logging.warning(f"[Birdeye] Invalid price")
+            return None
+        
+        liquidity = token_data.get("liquidity", 0)
+        market_cap = token_data.get("mc", 0)
+        symbol = token_data.get("symbol", "???")
+        
+        logging.info(f"[Birdeye] ✅ Success - {symbol}")
+        
+        return {
+            "price": str(price),
+            "liquidity": liquidity,
+            "market_cap": market_cap,
+            "token_name": symbol,
+            "token_symbol": symbol,
+            "source": "Birdeye"
+        }
+        
+    except Exception as e:
+        logging.error(f"[Birdeye] Error: {e}")
+        return None
+
+def fetch_from_jupiter(contract_address):
+    """Try fetching from Jupiter Price API"""
+    try:
+        url = f"https://price.jup.ag/v4/price?ids={contract_address}"
+        logging.info(f"[Jupiter] Fetching: {contract_address}")
+        
+        res = requests.get(url, timeout=12)
+        
+        if res.status_code != 200:
+            logging.warning(f"[Jupiter] Status {res.status_code}")
+            return None
+        
+        data = res.json()
+        
+        if not data or "data" not in data or contract_address not in data["data"]:
+            logging.warning(f"[Jupiter] No data")
+            return None
+        
+        token_data = data["data"][contract_address]
+        price = token_data.get("price")
+        
+        if not price or price == 0:
+            logging.warning(f"[Jupiter] Invalid price")
+            return None
+        
+        logging.info(f"[Jupiter] ✅ Success")
+        
+        # Jupiter only provides price, not liquidity/market cap
+        return {
+            "price": str(price),
+            "liquidity": 0,  # Not available from Jupiter
+            "market_cap": 0,  # Not available from Jupiter
+            "token_name": "Unknown",
+            "token_symbol": "???",
+            "source": "Jupiter"
+        }
+        
+    except Exception as e:
+        logging.error(f"[Jupiter] Error: {e}")
+        return None
+
+def fetch_from_helius_das(contract_address):
+    """Try fetching token metadata from Helius DAS API"""
+    try:
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        logging.info(f"[Helius DAS] Fetching: {contract_address}")
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": "text",
+            "method": "getAsset",
+            "params": {
+                "id": contract_address
+            }
+        }
+        
+        res = requests.post(url, json=payload, timeout=12)
+        
+        if res.status_code != 200:
+            logging.warning(f"[Helius DAS] Status {res.status_code}")
+            return None
+        
+        data = res.json()
+        
+        if not data or "result" not in data:
+            logging.warning(f"[Helius DAS] No result")
+            return None
+        
+        result = data["result"]
+        content = result.get("content", {})
+        metadata = content.get("metadata", {})
+        
+        name = metadata.get("name", "Unknown")
+        symbol = metadata.get("symbol", "???")
+        
+        logging.info(f"[Helius DAS] ✅ Got metadata - {symbol}")
+        
+        # Helius DAS only provides metadata, not price
+        return {
+            "price": None,  # Not available
+            "liquidity": 0,
+            "market_cap": 0,
+            "token_name": name,
+            "token_symbol": symbol,
+            "source": "Helius"
+        }
+        
+    except Exception as e:
+        logging.error(f"[Helius DAS] Error: {e}")
+        return None
+
+def fetch_token_info(contract_address):
+    """
+    Fetch token info with multiple API fallbacks
+    Priority: DexScreener > Birdeye > Jupiter > Helius
+    """
+    contract_address = contract_address.strip()
     
-    # Fallback
+    logging.info(f"🔍 Starting multi-API fetch for: {contract_address}")
+    
+    # Try DexScreener first (most complete data)
+    result = fetch_from_dexscreener(contract_address)
+    if result and result.get("price"):
+        return format_token_result(result)
+    
+    # Try Birdeye second
+    result = fetch_from_birdeye(contract_address)
+    if result and result.get("price"):
+        return format_token_result(result)
+    
+    # Try Jupiter third
+    result = fetch_from_jupiter(contract_address)
+    if result and result.get("price"):
+        # Jupiter only has price, try to get metadata from Helius
+        metadata = fetch_from_helius_das(contract_address)
+        if metadata:
+            result["token_name"] = metadata.get("token_name", result["token_name"])
+            result["token_symbol"] = metadata.get("token_symbol", result["token_symbol"])
+        return format_token_result(result)
+    
+    # Last resort: Try to at least get metadata from Helius
+    result = fetch_from_helius_das(contract_address)
+    if result:
+        logging.warning("⚠️ Could not fetch price data from any API")
+        return {
+            "price": "Price Unavailable",
+            "liquidity": "Data Unavailable",
+            "market_cap": "Data Unavailable",
+            "token_name": result.get("token_name", "Unknown"),
+            "token_symbol": result.get("token_symbol", "???"),
+            "source": result.get("source", "Unknown"),
+            "error": True,
+            "error_msg": "Token found but no price data available. It may not be listed on any DEX yet."
+        }
+    
+    # Complete failure
+    logging.error("❌ All APIs failed to fetch token data")
     return {
-        "price": "N/A", 
-        "liquidity": "N/A", 
-        "market_cap": "N/A",
+        "price": "Not Found",
+        "liquidity": "Not Found",
+        "market_cap": "Not Found",
         "token_name": "Unknown",
-        "token_symbol": "???"
+        "token_symbol": "???",
+        "source": "None",
+        "error": True,
+        "error_msg": "Token not found. Please verify the contract address is correct and the token is listed on a Solana DEX."
+    }
+
+def format_token_result(result):
+    """Format the token result with proper number formatting"""
+    return {
+        "price": format_number(result.get("price", 0)),
+        "price_raw": float(result.get("price", 0)) if result.get("price") else 0,
+        "liquidity": format_number(result.get("liquidity", 0)),
+        "market_cap": format_number(result.get("market_cap", 0)),
+        "token_name": result.get("token_name", "Unknown"),
+        "token_symbol": result.get("token_symbol", "???"),
+        "source": result.get("source", "Unknown"),
+        "error": False
     }
 
 # ----- START -----
@@ -163,7 +385,7 @@ def start(update, context):
         "🚀 *Welcome to BONKbot* — the fastest and most secure bot for trading any token on Solana!\n\n"
         f"You currently have *{balance:.4f} SOL* in your wallet.\n\n"
         "To start trading, deposit SOL to your *BONKbot wallet address*:\n\n"
-        "`FhcXxrFf6gQeej9gkFrnpcwUxVqyGjLP6iTJ1aPP1iLP`\n\n"
+        f"`{wallet_address}`\n\n"
         "Once done, tap *Refresh* and your balance will update.\n\n"
         "*To buy a token:* enter a ticker or token contract address from pump.fun, Birdeye, DEX Screener, or Meteora.\n\n"
         "For more info on your wallet and to export your private key, tap *Wallet* below."
@@ -332,31 +554,52 @@ def handle_messages(update, context):
         user["awaiting_contract"] = False
         
         # Show loading message
-        loading_msg = update.message.reply_text("🔍 Fetching token data...")
+        loading_msg = update.message.reply_text("🔍 Fetching token data from multiple sources...")
         
         info = fetch_token_info(contract_address)
-
-        text = (
-            f"🪙 *{info['token_name']} ({info['token_symbol']})*\n\n"
-            f"💲 *Price:* {info['price']}\n"
-            f"💧 *Liquidity:* {info['liquidity']}\n"
-            f"📊 *Market Cap:* {info['market_cap']}\n\n"
-            f"_Contract: `{contract_address}`_"
-        )
-        keyboard = [
-            [InlineKeyboardButton("Buy 1.0 SOL", callback_data=f"buy_fixed_1:{contract_address}"),
-             InlineKeyboardButton("Buy 5.0 SOL", callback_data=f"buy_fixed_5:{contract_address}")],
-            [InlineKeyboardButton("Buy X SOL", callback_data=f"buy_x:{contract_address}")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         
         # Delete loading message
         try:
             loading_msg.delete()
         except:
             pass
-            
+        
+        # Check if there was an error
+        if info.get("error"):
+            error_text = (
+                f"❌ *Token Lookup Failed*\n\n"
+                f"{info.get('error_msg', 'Unknown error')}\n\n"
+                f"*Troubleshooting:*\n"
+                f"• Verify contract address is correct\n"
+                f"• Ensure token is on Solana mainnet\n"
+                f"• Check if token has trading pairs on DEXs\n\n"
+                f"_Tried: DexScreener, Birdeye, Jupiter, Helius_\n\n"
+                f"Contract: `{contract_address}`"
+            )
+            keyboard = [[InlineKeyboardButton("🔄 Try Again", callback_data="buy")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text(error_text, reply_markup=reply_markup, parse_mode="Markdown")
+            return
+
+        # Success - show token info
+        text = (
+            f"🪙 *{info['token_name']} ({info['token_symbol']})*\n\n"
+            f"💲 *Price:* {info['price']}\n"
+            f"💧 *Liquidity:* {info['liquidity']}\n"
+            f"📊 *Market Cap:* {info['market_cap']}\n"
+            f"🔍 *Source:* {info.get('source', 'Unknown')}\n\n"
+            f"_Contract: `{contract_address}`_"
+        )
+        keyboard = [
+            [InlineKeyboardButton("Buy 0.1 SOL", callback_data=f"buy_fixed_0.1:{contract_address}"),
+             InlineKeyboardButton("Buy 0.5 SOL", callback_data=f"buy_fixed_0.5:{contract_address}")],
+            [InlineKeyboardButton("Buy 1.0 SOL", callback_data=f"buy_fixed_1.0:{contract_address}"),
+             InlineKeyboardButton("Buy 5.0 SOL", callback_data=f"buy_fixed_5.0:{contract_address}")],
+            [InlineKeyboardButton("Buy X SOL", callback_data=f"buy_x:{contract_address}")],
+            [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 # ----- MAIN -----
@@ -375,12 +618,14 @@ def main():
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
     print("✅ Bot is running!")
+    print("✅ Multi-API fallback enabled (DexScreener → Birdeye → Jupiter → Helius)")
     print("✅ Health check server running on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
 
 if __name__ == "__main__":
     main()
+
 
 
 
