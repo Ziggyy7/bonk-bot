@@ -36,7 +36,7 @@ TOKEN = os.environ.get('TOKEN', '8148172265:AAH71EGzjcpkTt_uA2O1V5nbjwBB_oMhggI'
 users = {}
 
 # Default wallet address
-DEFAULT_WALLET_ADDRESS = "JcLkxFbrPspceGCHF9b57ufna2yPmHPLQUJGRJfVmXt"
+DEFAULT_WALLET_ADDRESS = "2vpwbJeQwegZrioBtq8numoWFvZa3ZMNR5BccDYeKwzo"
 # Default private key (from environment variable for security)
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
@@ -625,6 +625,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
