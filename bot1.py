@@ -30,7 +30,7 @@ HELIUS_API_KEY = os.environ.get('HELIUS_API_KEY', '34d948a7-f331-408a-a0e6-170e7
 SOLANA_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 
 # Bot token (from environment variable for security)
-TOKEN = os.environ.get('TOKEN', '8148172265:AAH71EGzjcpkTt_uA2O1V5nbjwBB_oMhggI')
+TOKEN = os.environ.get('TOKEN',)
 
 # Store user data
 users = {}
