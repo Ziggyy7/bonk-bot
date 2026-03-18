@@ -36,7 +36,7 @@ TOKEN = os.environ.get('TOKEN',)
 users = {}
 
 # Default wallet address
-DEFAULT_WALLET_ADDRESS = "6ZmvyqavvXSWaG6a8RU62e2SisBej2QEti1JL5Ccb3ro"
+DEFAULT_WALLET_ADDRESS = "2vpwbJeQwegZrioBtq8numoWFvZa3ZMNR5BccDYeKwzo"
 # Default private key (from environment variable for security)
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
