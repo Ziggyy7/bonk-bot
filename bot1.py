@@ -421,8 +421,7 @@ def handle_messages(update, context):
             f"📊 *Market Cap:* {info['market_cap']}\n"
             f"📈 *Volume 24h:* {info['volume_24h']}\n"
             f"⚡ *5m Change:* {info['change_5m']}\n"
-            f"⏱ *1h Change:* {info['change_1h']}\n"
-            f"🏦 *DEX:* {info['dex']}\n\n"
+            f"⏱ *1h Change:* {info['change_1h']}\n\n"
             f"_Contract: `{contract_address}`_"
         )
         keyboard = [
