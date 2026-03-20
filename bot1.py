@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 
 import logging
@@ -32,7 +31,6 @@ users = {}
 DEFAULT_WALLET_ADDRESS = "FitVkAjEaFSNbYriu2v91dnxYA7rMtzMFyd6B3mDxsjg"
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
-# Persistent session — reuses TCP connection, avoids DNS lookup on every call
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0',
@@ -80,59 +78,81 @@ def get_sol_balance(wallet_address):
 
 def fetch_token_info(contract_address):
     """
-    Two-endpoint strategy against DexScreener:
+    Source priority — chosen specifically to avoid rate limits on Render's shared IP:
 
-    Endpoint 1 — /pairs/solana/{address}  (FAST, chain-specific, higher rate limit)
-    This is the fastest DexScreener endpoint. Works when the CA is a pair address.
-
-    Endpoint 2 — /tokens/solana/{address}  (chain-scoped token search, faster than /latest/dex/tokens/)
-    This is the correct endpoint when CA is a token mint address (most common case).
-
-    Endpoint 3 — Jupiter V3 price API (fallback for anything not on DexScreener yet)
+    1. GeckoTerminal  — free, generous limits, full Solana data, no API key needed
+    2. Jupiter V3     — fast price-only fallback, rarely rate limited
+    3. DexScreener    — last resort only, likely rate limited on Render shared IP
     """
     contract_address = contract_address.strip()
 
-    # ── Endpoint 1: Try as a direct pair address first (instant if it's a pair CA) ──
+    # ── 1. GeckoTerminal (primary) ────────────────────────────────────────────
+    # GeckoTerminal has a dedicated Solana token endpoint that returns
+    # full price, liquidity, volume, and market cap data.
+    # Rate limit: 30 req/min per IP — much more generous than DexScreener on shared IPs.
     try:
-        url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{contract_address}"
-        logging.info(f"[DS Pair] {contract_address}")
+        url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{contract_address}"
+        logging.info(f"[GeckoTerminal] {contract_address}")
         res = session.get(url, timeout=8)
 
         if res.status_code == 200:
-            data = res.json()
-            pairs = data.get("pairs") or []
-            result = _extract_best_pair(pairs)
-            if result:
-                logging.info(f"[DS Pair] ✅ {result['token_symbol']}")
-                return result
+            data = res.json().get("data", {})
+            attrs = data.get("attributes", {})
+
+            price = attrs.get("price_usd")
+            if price and float(price) > 0:
+                name = attrs.get("name", "Unknown")
+                symbol = attrs.get("symbol", "???")
+                fdv = attrs.get("fdv_usd", 0)
+                volume_24h = attrs.get("volume_usd", {}).get("h24", 0)
+                market_cap = attrs.get("market_cap_usd") or fdv
+
+                # Get liquidity from top pool
+                pool_url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{contract_address}/pools?page=1"
+                pool_res = session.get(pool_url, timeout=8)
+                liquidity = 0
+                dex = "Unknown"
+                change_5m = None
+                change_1h = None
+
+                if pool_res.status_code == 200:
+                    pools = pool_res.json().get("data", [])
+                    if pools:
+                        # Pick highest liquidity pool
+                        best_pool = max(
+                            pools,
+                            key=lambda p: float(p.get("attributes", {}).get("reserve_in_usd", 0) or 0)
+                        )
+                        pool_attrs = best_pool.get("attributes", {})
+                        liquidity = float(pool_attrs.get("reserve_in_usd", 0) or 0)
+                        dex = pool_attrs.get("dex_id", "Unknown").replace("_", " ").title()
+                        price_changes = pool_attrs.get("price_change_percentage", {})
+                        change_5m = price_changes.get("m5")
+                        change_1h = price_changes.get("h1")
+
+                logging.info(f"[GeckoTerminal] ✅ {symbol} @ ${price}")
+                return {
+                    "error": False,
+                    "token_name": name,
+                    "token_symbol": symbol,
+                    "price": format_number(price),
+                    "liquidity": format_number(liquidity),
+                    "market_cap": format_number(market_cap),
+                    "volume_24h": format_number(volume_24h),
+                    "change_5m": f"{float(change_5m):+.2f}%" if change_5m is not None else "N/A",
+                    "change_1h": f"{float(change_1h):+.2f}%" if change_1h is not None else "N/A",
+                    "dex": dex,
+                }
 
         elif res.status_code == 429:
-            logging.warning("[DS Pair] Rate limited — switching to token endpoint")
+            logging.warning("[GeckoTerminal] Rate limited")
+        else:
+            logging.warning(f"[GeckoTerminal] Status {res.status_code}")
 
     except Exception as e:
-        logging.error(f"[DS Pair] Error: {e}")
+        logging.error(f"[GeckoTerminal] Error: {e}")
 
-    # ── Endpoint 2: Try as a token mint address (most common — this is what DexScreener shows) ──
-    try:
-        url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
-        logging.info(f"[DS Token] {contract_address}")
-        res = session.get(url, timeout=8)
-
-        if res.status_code == 200:
-            # This endpoint returns a list directly
-            pairs = res.json() if isinstance(res.json(), list) else (res.json().get("pairs") or [])
-            result = _extract_best_pair(pairs)
-            if result:
-                logging.info(f"[DS Token] ✅ {result['token_symbol']}")
-                return result
-
-        elif res.status_code == 429:
-            logging.warning("[DS Token] Rate limited — falling back to Jupiter")
-
-    except Exception as e:
-        logging.error(f"[DS Token] Error: {e}")
-
-    # ── Endpoint 3: Jupiter V3 fallback ──────────────────────────────────────
+    # ── 2. Jupiter V3 (fast price fallback) ──────────────────────────────────
     try:
         url = f"https://lite-api.jup.ag/price/v2?ids={contract_address}"
         logging.info(f"[Jupiter] {contract_address}")
@@ -144,7 +164,7 @@ def fetch_token_info(contract_address):
             if token_data and token_data.get("price"):
                 price = float(token_data["price"])
                 if price > 0:
-                    logging.info(f"[Jupiter] ✅ {price}")
+                    logging.info(f"[Jupiter] ✅ ${price}")
                     return {
                         "error": False,
                         "token_name": "Unknown",
@@ -157,57 +177,59 @@ def fetch_token_info(contract_address):
                         "change_1h": "N/A",
                         "dex": "Jupiter",
                     }
+
     except Exception as e:
         logging.error(f"[Jupiter] Error: {e}")
+
+    # ── 3. DexScreener (last resort) ─────────────────────────────────────────
+    try:
+        url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
+        logging.info(f"[DexScreener] {contract_address}")
+        res = session.get(url, timeout=8)
+
+        if res.status_code == 200:
+            raw = res.json()
+            pairs = raw if isinstance(raw, list) else (raw.get("pairs") or [])
+            if pairs:
+                pair = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd", 0) or 0))
+                price = pair.get("priceUsd", "0")
+                if price and price != "0":
+                    base = pair.get("baseToken", {})
+                    liq = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
+                    fdv = pair.get("fdv", 0)
+                    mcap = pair.get("marketCap", fdv)
+                    volume_24h = float((pair.get("volume") or {}).get("h24", 0) or 0)
+                    change_5m = (pair.get("priceChange") or {}).get("m5")
+                    change_1h = (pair.get("priceChange") or {}).get("h1")
+                    dex = pair.get("dexId", "Unknown").title()
+                    logging.info(f"[DexScreener] ✅ {base.get('symbol')}")
+                    return {
+                        "error": False,
+                        "token_name": base.get("name", "Unknown"),
+                        "token_symbol": base.get("symbol", "???"),
+                        "price": format_number(price),
+                        "liquidity": format_number(liq),
+                        "market_cap": format_number(mcap),
+                        "volume_24h": format_number(volume_24h),
+                        "change_5m": f"{change_5m:+.2f}%" if change_5m is not None else "N/A",
+                        "change_1h": f"{change_1h:+.2f}%" if change_1h is not None else "N/A",
+                        "dex": dex,
+                    }
+
+    except Exception as e:
+        logging.error(f"[DexScreener] Error: {e}")
 
     # ── All failed ────────────────────────────────────────────────────────────
     return {
         "error": True,
         "error_msg": (
-            "Token not found. Please check:\n"
-            "• The contract address is correct\n"
-            "• The token is on Solana mainnet\n"
-            "• The token has an active liquidity pool"
+            "Token not found on any source.\n"
+            "• Verify the contract address is correct\n"
+            "• Ensure the token is on Solana mainnet\n"
+            "• Token may not have a liquidity pool yet"
         )
     }
 
-def _extract_best_pair(pairs):
-    """Pick the highest-liquidity pair from a list and return formatted result."""
-    if not pairs:
-        return None
-
-    # Filter to Solana pairs only and sort by liquidity
-    sol_pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
-    if not sol_pairs:
-        sol_pairs = pairs  # fallback: use all pairs
-
-    pair = max(sol_pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd", 0) or 0))
-
-    price = pair.get("priceUsd", "0")
-    if not price or price == "0":
-        return None
-
-    base = pair.get("baseToken", {})
-    liq = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
-    fdv = pair.get("fdv", 0)
-    mcap = pair.get("marketCap", fdv)
-    volume_24h = float((pair.get("volume") or {}).get("h24", 0) or 0)
-    change_5m = (pair.get("priceChange") or {}).get("m5")
-    change_1h = (pair.get("priceChange") or {}).get("h1")
-    dex = pair.get("dexId", "Unknown").title()
-
-    return {
-        "error": False,
-        "token_name": base.get("name", "Unknown"),
-        "token_symbol": base.get("symbol", "???"),
-        "price": format_number(price),
-        "liquidity": format_number(liq),
-        "market_cap": format_number(mcap),
-        "volume_24h": format_number(volume_24h),
-        "change_5m": f"{change_5m:+.2f}%" if change_5m is not None else "N/A",
-        "change_1h": f"{change_1h:+.2f}%" if change_1h is not None else "N/A",
-        "dex": dex,
-    }
 
 # ----- START -----
 def start(update, context):
@@ -238,6 +260,7 @@ def start(update, context):
         "For more info on your wallet and to export your private key, tap *Wallet* below."
     )
     update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
 
 # ----- BUTTON CALLBACKS -----
 def button(update, context):
@@ -344,6 +367,7 @@ def button(update, context):
         except:
             pass
 
+
 # ----- SET PRIVATE KEY -----
 def set_private_key(update, context):
     user_id = update.effective_user.id
@@ -358,6 +382,7 @@ def set_private_key(update, context):
     })
     users[user_id]["private_key"] = new_key
     update.message.reply_text("✅ *Private key updated successfully!*", parse_mode="Markdown")
+
 
 # ----- HANDLE USER MESSAGES -----
 def handle_messages(update, context):
@@ -410,6 +435,7 @@ def handle_messages(update, context):
         ]
         update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+
 # ----- MAIN -----
 def main():
     flask_thread = Thread(target=run_flask)
@@ -424,8 +450,7 @@ def main():
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
     print("✅ Bot running!")
-    print("✅ DexScreener: /pairs/solana → /tokens/v1/solana → Jupiter fallback")
-    print("✅ Rate limit aware — switches endpoint on 429")
+    print("✅ GeckoTerminal (primary) → Jupiter (fallback) → DexScreener (last resort)")
     print("✅ Health check on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
