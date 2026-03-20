@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 
 import logging
@@ -8,10 +9,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 from flask import Flask
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 
-# Flask app for health check (keeps bot awake)
 app = Flask(__name__)
 
 @app.route('/')
@@ -25,23 +24,18 @@ def health():
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
-# Solana RPC
 HELIUS_API_KEY = os.environ.get('HELIUS_API_KEY', '34d948a7-f331-408a-a0e6-170e7ed94756')
 SOLANA_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-
-# Bot token
 TOKEN = os.environ.get('TOKEN',)
 
-# Store user data
 users = {}
-
 DEFAULT_WALLET_ADDRESS = "FitVkAjEaFSNbYriu2v91dnxYA7rMtzMFyd6B3mDxsjg"
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
-# Persistent session — reuses the same TCP connection every call (much faster)
+# Persistent session — reuses TCP connection, avoids DNS lookup on every call
 session = requests.Session()
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0',
     'Accept': 'application/json',
 })
 
@@ -82,68 +76,75 @@ def get_sol_balance(wallet_address):
         logging.error(f"SOL balance error: {e}")
         return 0.0
 
-# ----- CORE TOKEN FETCH -----
-# Since you get CAs from DexScreener, DexScreener already has the data.
-# We call it directly and immediately — no parallel bloat, no slow fallbacks.
+# ----- TOKEN FETCH -----
 
 def fetch_token_info(contract_address):
+    """
+    Two-endpoint strategy against DexScreener:
+
+    Endpoint 1 — /pairs/solana/{address}  (FAST, chain-specific, higher rate limit)
+    This is the fastest DexScreener endpoint. Works when the CA is a pair address.
+
+    Endpoint 2 — /tokens/solana/{address}  (chain-scoped token search, faster than /latest/dex/tokens/)
+    This is the correct endpoint when CA is a token mint address (most common case).
+
+    Endpoint 3 — Jupiter V3 price API (fallback for anything not on DexScreener yet)
+    """
     contract_address = contract_address.strip()
 
-    # ── 1. DexScreener (primary — your source, already indexed) ──────────────
+    # ── Endpoint 1: Try as a direct pair address first (instant if it's a pair CA) ──
     try:
-        url = f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}"
-        res = session.get(url, timeout=10)
+        url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{contract_address}"
+        logging.info(f"[DS Pair] {contract_address}")
+        res = session.get(url, timeout=8)
 
         if res.status_code == 200:
             data = res.json()
             pairs = data.get("pairs") or []
+            result = _extract_best_pair(pairs)
+            if result:
+                logging.info(f"[DS Pair] ✅ {result['token_symbol']}")
+                return result
 
-            if pairs:
-                # Pick the pair with the highest liquidity
-                pair = max(pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd", 0) or 0))
-                price = pair.get("priceUsd", "0")
-
-                if price and price != "0":
-                    base = pair.get("baseToken", {})
-                    liq = (pair.get("liquidity") or {}).get("usd", 0)
-                    fdv = pair.get("fdv", 0)
-                    mcap = pair.get("marketCap", fdv)
-                    dex = pair.get("dexId", "Unknown DEX").title()
-                    change_5m = pair.get("priceChange", {}).get("m5", None)
-                    change_1h = pair.get("priceChange", {}).get("h1", None)
-                    volume_24h = (pair.get("volume") or {}).get("h24", 0)
-
-                    logging.info(f"[DexScreener] ✅ {base.get('symbol')} @ {price}")
-                    return {
-                        "error": False,
-                        "token_name": base.get("name", "Unknown"),
-                        "token_symbol": base.get("symbol", "???"),
-                        "price": format_number(price),
-                        "liquidity": format_number(liq),
-                        "market_cap": format_number(mcap),
-                        "volume_24h": format_number(volume_24h),
-                        "change_5m": f"{change_5m:+.2f}%" if change_5m is not None else "N/A",
-                        "change_1h": f"{change_1h:+.2f}%" if change_1h is not None else "N/A",
-                        "dex": dex,
-                        "source": "DexScreener",
-                    }
-
-        logging.warning(f"[DexScreener] No pairs found, status {res.status_code}")
+        elif res.status_code == 429:
+            logging.warning("[DS Pair] Rate limited — switching to token endpoint")
 
     except Exception as e:
-        logging.error(f"[DexScreener] Error: {e}")
+        logging.error(f"[DS Pair] Error: {e}")
 
-    # ── 2. Jupiter V3 fallback (for tokens not yet on DexScreener) ────────────
+    # ── Endpoint 2: Try as a token mint address (most common — this is what DexScreener shows) ──
+    try:
+        url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
+        logging.info(f"[DS Token] {contract_address}")
+        res = session.get(url, timeout=8)
+
+        if res.status_code == 200:
+            # This endpoint returns a list directly
+            pairs = res.json() if isinstance(res.json(), list) else (res.json().get("pairs") or [])
+            result = _extract_best_pair(pairs)
+            if result:
+                logging.info(f"[DS Token] ✅ {result['token_symbol']}")
+                return result
+
+        elif res.status_code == 429:
+            logging.warning("[DS Token] Rate limited — falling back to Jupiter")
+
+    except Exception as e:
+        logging.error(f"[DS Token] Error: {e}")
+
+    # ── Endpoint 3: Jupiter V3 fallback ──────────────────────────────────────
     try:
         url = f"https://lite-api.jup.ag/price/v2?ids={contract_address}"
+        logging.info(f"[Jupiter] {contract_address}")
         res = session.get(url, timeout=8)
+
         if res.status_code == 200:
             data = res.json()
             token_data = data.get("data", {}).get(contract_address)
             if token_data and token_data.get("price"):
                 price = float(token_data["price"])
                 if price > 0:
-                    logging.info(f"[Jupiter V3] ✅ {price}")
+                    logging.info(f"[Jupiter] ✅ {price}")
                     return {
                         "error": False,
                         "token_name": "Unknown",
@@ -155,17 +156,58 @@ def fetch_token_info(contract_address):
                         "change_5m": "N/A",
                         "change_1h": "N/A",
                         "dex": "Jupiter",
-                        "source": "Jupiter",
                     }
     except Exception as e:
-        logging.error(f"[Jupiter V3] Error: {e}")
+        logging.error(f"[Jupiter] Error: {e}")
 
-    # ── 3. Complete failure ───────────────────────────────────────────────────
+    # ── All failed ────────────────────────────────────────────────────────────
     return {
         "error": True,
-        "error_msg": "Token not found on DexScreener or Jupiter.\nVerify the contract address is correct."
+        "error_msg": (
+            "Token not found. Please check:\n"
+            "• The contract address is correct\n"
+            "• The token is on Solana mainnet\n"
+            "• The token has an active liquidity pool"
+        )
     }
 
+def _extract_best_pair(pairs):
+    """Pick the highest-liquidity pair from a list and return formatted result."""
+    if not pairs:
+        return None
+
+    # Filter to Solana pairs only and sort by liquidity
+    sol_pairs = [p for p in pairs if p.get("chainId", "").lower() == "solana"]
+    if not sol_pairs:
+        sol_pairs = pairs  # fallback: use all pairs
+
+    pair = max(sol_pairs, key=lambda x: float((x.get("liquidity") or {}).get("usd", 0) or 0))
+
+    price = pair.get("priceUsd", "0")
+    if not price or price == "0":
+        return None
+
+    base = pair.get("baseToken", {})
+    liq = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
+    fdv = pair.get("fdv", 0)
+    mcap = pair.get("marketCap", fdv)
+    volume_24h = float((pair.get("volume") or {}).get("h24", 0) or 0)
+    change_5m = (pair.get("priceChange") or {}).get("m5")
+    change_1h = (pair.get("priceChange") or {}).get("h1")
+    dex = pair.get("dexId", "Unknown").title()
+
+    return {
+        "error": False,
+        "token_name": base.get("name", "Unknown"),
+        "token_symbol": base.get("symbol", "???"),
+        "price": format_number(price),
+        "liquidity": format_number(liq),
+        "market_cap": format_number(mcap),
+        "volume_24h": format_number(volume_24h),
+        "change_5m": f"{change_5m:+.2f}%" if change_5m is not None else "N/A",
+        "change_1h": f"{change_1h:+.2f}%" if change_1h is not None else "N/A",
+        "dex": dex,
+    }
 
 # ----- START -----
 def start(update, context):
@@ -196,7 +238,6 @@ def start(update, context):
         "For more info on your wallet and to export your private key, tap *Wallet* below."
     )
     update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
 
 # ----- BUTTON CALLBACKS -----
 def button(update, context):
@@ -253,7 +294,11 @@ def button(update, context):
             "Yes! We charge 1% on transactions. All other actions are free.\n\n"
             "*Net Profit:* Calculated after fees and price impact."
         )
-        query.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Close", callback_data="close_wallet")]]), parse_mode="Markdown")
+        query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Close", callback_data="close_wallet")]]),
+            parse_mode="Markdown"
+        )
 
     elif data == "limit_orders":
         keyboard = [
@@ -299,7 +344,6 @@ def button(update, context):
         except:
             pass
 
-
 # ----- SET PRIVATE KEY -----
 def set_private_key(update, context):
     user_id = update.effective_user.id
@@ -314,7 +358,6 @@ def set_private_key(update, context):
     })
     users[user_id]["private_key"] = new_key
     update.message.reply_text("✅ *Private key updated successfully!*", parse_mode="Markdown")
-
 
 # ----- HANDLE USER MESSAGES -----
 def handle_messages(update, context):
@@ -331,7 +374,6 @@ def handle_messages(update, context):
         user["awaiting_contract"] = False
 
         loading_msg = update.message.reply_text("🔍 *Fetching token data...*", parse_mode="Markdown")
-
         info = fetch_token_info(contract_address)
 
         try:
@@ -340,19 +382,13 @@ def handle_messages(update, context):
             pass
 
         if info.get("error"):
-            error_text = (
-                f"❌ *Token Not Found*\n\n"
-                f"{info.get('error_msg', 'Unknown error')}\n\n"
-                f"Contract: `{contract_address}`"
-            )
             update.message.reply_text(
-                error_text,
+                f"❌ *Token Not Found*\n\n{info.get('error_msg', '')}\n\nContract: `{contract_address}`",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again", callback_data="buy")]]),
                 parse_mode="Markdown"
             )
             return
 
-        # Build a rich token info card
         text = (
             f"🪙 *{info['token_name']} ({info['token_symbol']})*\n\n"
             f"💲 *Price:* {info['price']}\n"
@@ -374,7 +410,6 @@ def handle_messages(update, context):
         ]
         update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-
 # ----- MAIN -----
 def main():
     flask_thread = Thread(target=run_flask)
@@ -388,9 +423,10 @@ def main():
     dp.add_handler(CallbackQueryHandler(button))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
-    print("✅ Bot is running!")
-    print("✅ DexScreener → Jupiter V3 fallback (clean, fast, no bloat)")
-    print("✅ Health check server running on port 8080")
+    print("✅ Bot running!")
+    print("✅ DexScreener: /pairs/solana → /tokens/v1/solana → Jupiter fallback")
+    print("✅ Rate limit aware — switches endpoint on 429")
+    print("✅ Health check on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
 
