@@ -3,6 +3,7 @@
 import logging
 import requests
 import os
+import time
 from threading import Thread
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
@@ -50,9 +51,7 @@ def format_number(value):
     if value == 0:
         return "$0"
     
-    # For very small numbers (less than 0.01), show more decimals
     if value < 0.01:
-        # Format in scientific notation or show significant digits
         if value < 0.000001:
             return f"${value:.10f}".rstrip('0').rstrip('.')
         else:
@@ -78,7 +77,6 @@ def get_sol_balance(wallet_address):
         data = response.json()
         
         if "result" in data and "value" in data["result"]:
-            # Balance is returned in lamports (1 SOL = 1,000,000,000 lamports)
             lamports = data["result"]["value"]
             sol_balance = lamports / 1_000_000_000
             logging.info(f"Balance for {wallet_address}: {sol_balance} SOL")
@@ -113,7 +111,6 @@ def fetch_from_dexscreener(contract_address):
             logging.warning(f"[DexScreener] No pairs found")
             return None
         
-        # Get the pair with highest liquidity
         pairs_sorted = sorted(
             data["pairs"], 
             key=lambda x: float(x.get("liquidity", {}).get("usd", 0) or 0), 
@@ -152,13 +149,12 @@ def fetch_from_dexscreener(contract_address):
 def fetch_from_birdeye(contract_address):
     """Try fetching from Birdeye API"""
     try:
-        # Birdeye public API endpoint (no key needed for basic data)
         url = f"https://public-api.birdeye.so/defi/token_overview?address={contract_address}"
         logging.info(f"[Birdeye] Fetching: {contract_address}")
         
         headers = {
             'User-Agent': 'Mozilla/5.0',
-            'X-API-KEY': 'public'  # Public endpoint
+            'X-API-KEY': 'public'
         }
         
         res = requests.get(url, headers=headers, timeout=12)
@@ -226,11 +222,10 @@ def fetch_from_jupiter(contract_address):
         
         logging.info(f"[Jupiter] ✅ Success")
         
-        # Jupiter only provides price, not liquidity/market cap
         return {
             "price": str(price),
-            "liquidity": 0,  # Not available from Jupiter
-            "market_cap": 0,  # Not available from Jupiter
+            "liquidity": 0,
+            "market_cap": 0,
             "token_name": "Unknown",
             "token_symbol": "???",
             "source": "Jupiter"
@@ -276,9 +271,8 @@ def fetch_from_helius_das(contract_address):
         
         logging.info(f"[Helius DAS] ✅ Got metadata - {symbol}")
         
-        # Helius DAS only provides metadata, not price
         return {
-            "price": None,  # Not available
+            "price": None,
             "liquidity": 0,
             "market_cap": 0,
             "token_name": name,
@@ -299,27 +293,22 @@ def fetch_token_info(contract_address):
     
     logging.info(f"🔍 Starting multi-API fetch for: {contract_address}")
     
-    # Try DexScreener first (most complete data)
     result = fetch_from_dexscreener(contract_address)
     if result and result.get("price"):
         return format_token_result(result)
     
-    # Try Birdeye second
     result = fetch_from_birdeye(contract_address)
     if result and result.get("price"):
         return format_token_result(result)
     
-    # Try Jupiter third
     result = fetch_from_jupiter(contract_address)
     if result and result.get("price"):
-        # Jupiter only has price, try to get metadata from Helius
         metadata = fetch_from_helius_das(contract_address)
         if metadata:
             result["token_name"] = metadata.get("token_name", result["token_name"])
             result["token_symbol"] = metadata.get("token_symbol", result["token_symbol"])
         return format_token_result(result)
     
-    # Last resort: Try to at least get metadata from Helius
     result = fetch_from_helius_das(contract_address)
     if result:
         logging.warning("⚠️ Could not fetch price data from any API")
@@ -334,7 +323,6 @@ def fetch_token_info(contract_address):
             "error_msg": "Token found but no price data available. It may not be listed on any DEX yet."
         }
     
-    # Complete failure
     logging.error("❌ All APIs failed to fetch token data")
     return {
         "price": "Not Found",
@@ -369,7 +357,6 @@ def start(update, context):
         "private_key": DEFAULT_PRIVATE_KEY
     })
 
-    # Fetch real balance from blockchain
     wallet_address = users[user_id].get("wallet", DEFAULT_WALLET_ADDRESS)
     balance = get_sol_balance(wallet_address)
     users[user_id]["balance"] = balance
@@ -411,9 +398,8 @@ def button(update, context):
     # ----- Wallet -----
     if data == "wallet":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
-        # Fetch real balance from blockchain
         balance = get_sol_balance(wallet_address)
-        user["balance"] = balance  # Update stored balance
+        user["balance"] = balance
         
         text = f"👛 *Your BONKbot Wallet*\n\n*Address:*\n`{wallet_address}`\n\n*Balance:* `{balance:.4f} SOL`"
         keyboard = [
@@ -428,9 +414,8 @@ def button(update, context):
     # ----- Refresh -----
     elif data == "refresh":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
-        # Fetch real balance from blockchain
         balance = get_sol_balance(wallet_address)
-        user["balance"] = balance  # Update stored balance
+        user["balance"] = balance
         
         text = f"🔄 *Balance Refreshed*\n\n👛 *Your BONKbot Wallet*\n\n*Address:*\n`{wallet_address}`\n\n*Balance:* `{balance:.4f} SOL`"
         keyboard = [
@@ -552,19 +537,49 @@ def handle_messages(update, context):
     elif user.get("awaiting_contract"):
         contract_address = update.message.text.strip()
         user["awaiting_contract"] = False
-        
-        # Show loading message
-        loading_msg = update.message.reply_text("🔍 Fetching token data from multiple sources...")
-        
-        info = fetch_token_info(contract_address)
-        
-        # Delete loading message
+
+        # Show initial loading message
+        loading_msg = update.message.reply_text(
+            "🔍 *Looking up token...*\n_(Waiting 3s for DEX indexing)_",
+            parse_mode="Markdown"
+        )
+
+        # ✅ FIX: Wait 3 seconds first before any API call
+        # This covers the most common case where the token just launched
+        # and DEX aggregators haven't indexed it yet
+        time.sleep(3)
+
+        # ✅ FIX: Retry up to 4 times with 5-second delays between each
+        # Total wait time: 3s initial + up to 3x5s retries = ~18 seconds max
+        info = None
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
+            logging.info(f"🔄 Token fetch attempt {attempt}/{max_attempts} for {contract_address}")
+            info = fetch_token_info(contract_address)
+
+            if not info.get("error"):
+                # ✅ Got a successful result, stop retrying
+                break
+
+            if attempt < max_attempts:
+                # Update the loading message with retry status
+                try:
+                    loading_msg.edit_text(
+                        f"⏳ *Attempt {attempt}/{max_attempts} — retrying in 5s...*\n"
+                        f"_(DEX aggregators may still be indexing this token)_",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                time.sleep(5)
+
+        # Delete the loading/status message
         try:
             loading_msg.delete()
         except:
             pass
-        
-        # Check if there was an error
+
+        # Check if all attempts failed
         if info.get("error"):
             error_text = (
                 f"❌ *Token Lookup Failed*\n\n"
@@ -573,7 +588,7 @@ def handle_messages(update, context):
                 f"• Verify contract address is correct\n"
                 f"• Ensure token is on Solana mainnet\n"
                 f"• Check if token has trading pairs on DEXs\n\n"
-                f"_Tried: DexScreener, Birdeye, Jupiter, Helius_\n\n"
+                f"_Tried: DexScreener, Birdeye, Jupiter, Helius (4 attempts over ~20s)_\n\n"
                 f"Contract: `{contract_address}`"
             )
             keyboard = [[InlineKeyboardButton("🔄 Try Again", callback_data="buy")]]
@@ -581,7 +596,7 @@ def handle_messages(update, context):
             update.message.reply_text(error_text, reply_markup=reply_markup, parse_mode="Markdown")
             return
 
-        # Success - show token info
+        # ✅ Success — show token info
         text = (
             f"🪙 *{info['token_name']} ({info['token_symbol']})*\n\n"
             f"💲 *Price:* {info['price']}\n"
@@ -599,7 +614,6 @@ def handle_messages(update, context):
             [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 # ----- MAIN -----
@@ -619,22 +633,10 @@ def main():
 
     print("✅ Bot is running!")
     print("✅ Multi-API fallback enabled (DexScreener → Birdeye → Jupiter → Helius)")
+    print("✅ Retry logic enabled (3s initial delay + 4 attempts x 5s = ~23s max wait)")
     print("✅ Health check server running on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
