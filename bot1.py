@@ -401,6 +401,11 @@ def handle_messages(update, context):
         loading_msg = update.message.reply_text("🔍 *Fetching token data...*", parse_mode="Markdown")
         info = fetch_token_info(contract_address)
 
+        # One silent retry — handles Render waking up after idle.
+        # The first request often times out during wake-up; the second always works.
+        if info.get("error"):
+            info = fetch_token_info(contract_address)
+
         try:
             loading_msg.delete()
         except:
