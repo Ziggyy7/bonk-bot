@@ -4,8 +4,8 @@ import logging
 import requests
 import os
 from threading import Thread
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 from flask import Flask
 
 logging.basicConfig(level=logging.INFO)
@@ -247,6 +247,83 @@ def start(update, context):
         "For more info on your wallet and to export your private key, tap *Wallet* below."
     )
     update.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
+
+
+# ----- NEW COMMAND HANDLERS (for BotFather menu buttons) -----
+def buy_command(update: Update, context: CallbackContext):
+    """Triggered by /buy from BotFather menu."""
+    user_id = update.effective_user.id
+    users.setdefault(user_id, {
+        "wallet": DEFAULT_WALLET_ADDRESS,
+        "balance": 0.0,
+        "private_key": DEFAULT_PRIVATE_KEY
+    })
+    users[user_id]["awaiting_contract"] = True
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+    ])
+    update.message.reply_text(
+        "🟢 *Buy Token*\n\n"
+        "Enter a *token symbol or contract address* to buy:\n\n"
+        "_Example: paste a CA from DexScreener, pump.fun, Birdeye, or Meteora_",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+def sell_command(update: Update, context: CallbackContext):
+    """Triggered by /sell from BotFather menu."""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="sell")]
+    ])
+    update.message.reply_text(
+        "🔴 *Sell Token*\n\n"
+        "You do not have any tokens yet.\n\n"
+        "Start trading from the *Buy Token* menu to build your positions.",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+def withdraw_command(update: Update, context: CallbackContext):
+    """Triggered by /withdraw from BotFather menu."""
+    user_id = update.effective_user.id
+    users.setdefault(user_id, {
+        "wallet": DEFAULT_WALLET_ADDRESS,
+        "balance": 0.0,
+        "private_key": DEFAULT_PRIVATE_KEY
+    })
+    user = users[user_id]
+    wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
+    balance = get_sol_balance(wallet_address)
+    user["balance"] = balance
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
+        [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_menu")]
+    ])
+    update.message.reply_text(
+        f"💸 *Withdraw*\n\n"
+        f"Available balance: *{balance:.4f} SOL*\n\n"
+        "Choose a withdrawal option:",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+def settings_command(update: Update, context: CallbackContext):
+    """Triggered by /settings from BotFather menu."""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="settings")]
+    ])
+    update.message.reply_text(
+        "⚙️ *Settings*\n\n"
+        "Settings configuration coming soon.\n\n"
+        "_Options like transaction speed (Fast / Turbo / Echo), "
+        "slippage, and priority fees will be available here._",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
 
 
 # ----- BUTTON CALLBACKS -----
@@ -562,14 +639,21 @@ def main():
 
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
+
+    # Command handlers (including the four new ones)
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("setkey", set_private_key))
+    dp.add_handler(CommandHandler("buy", buy_command))
+    dp.add_handler(CommandHandler("sell", sell_command))
+    dp.add_handler(CommandHandler("withdraw", withdraw_command))
+    dp.add_handler(CommandHandler("settings", settings_command))
+
     dp.add_handler(CallbackQueryHandler(button))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
     print("✅ Bot running!")
     print("✅ GeckoTerminal → Jupiter → DexScreener")
-    print("✅ All menu buttons active")
+    print("✅ All menu buttons active (inline + BotFather commands)")
     print("✅ Health check on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
