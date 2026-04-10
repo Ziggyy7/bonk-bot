@@ -77,19 +77,9 @@ def get_sol_balance(wallet_address):
 # ----- TOKEN FETCH -----
 
 def fetch_token_info(contract_address):
-    """
-    Source priority — chosen specifically to avoid rate limits on Render's shared IP:
-
-    1. GeckoTerminal  — free, generous limits, full Solana data, no API key needed
-    2. Jupiter V3     — fast price-only fallback, rarely rate limited
-    3. DexScreener    — last resort only, likely rate limited on Render shared IP
-    """
     contract_address = contract_address.strip()
 
-    # ── 1. GeckoTerminal (primary) ────────────────────────────────────────────
-    # GeckoTerminal has a dedicated Solana token endpoint that returns
-    # full price, liquidity, volume, and market cap data.
-    # Rate limit: 30 req/min per IP — much more generous than DexScreener on shared IPs.
+    # 1. GeckoTerminal (primary)
     try:
         url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{contract_address}"
         logging.info(f"[GeckoTerminal] {contract_address}")
@@ -98,7 +88,6 @@ def fetch_token_info(contract_address):
         if res.status_code == 200:
             data = res.json().get("data", {})
             attrs = data.get("attributes", {})
-
             price = attrs.get("price_usd")
             if price and float(price) > 0:
                 name = attrs.get("name", "Unknown")
@@ -107,7 +96,6 @@ def fetch_token_info(contract_address):
                 volume_24h = attrs.get("volume_usd", {}).get("h24", 0)
                 market_cap = attrs.get("market_cap_usd") or fdv
 
-                # Get liquidity from top pool
                 pool_url = f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{contract_address}/pools?page=1"
                 pool_res = session.get(pool_url, timeout=8)
                 liquidity = 0
@@ -118,7 +106,6 @@ def fetch_token_info(contract_address):
                 if pool_res.status_code == 200:
                     pools = pool_res.json().get("data", [])
                     if pools:
-                        # Pick highest liquidity pool
                         best_pool = max(
                             pools,
                             key=lambda p: float(p.get("attributes", {}).get("reserve_in_usd", 0) or 0)
@@ -143,21 +130,18 @@ def fetch_token_info(contract_address):
                     "change_1h": f"{float(change_1h):+.2f}%" if change_1h is not None else "N/A",
                     "dex": dex,
                 }
-
         elif res.status_code == 429:
             logging.warning("[GeckoTerminal] Rate limited")
         else:
             logging.warning(f"[GeckoTerminal] Status {res.status_code}")
-
     except Exception as e:
         logging.error(f"[GeckoTerminal] Error: {e}")
 
-    # ── 2. Jupiter V3 (fast price fallback) ──────────────────────────────────
+    # 2. Jupiter V3 fallback
     try:
         url = f"https://lite-api.jup.ag/price/v2?ids={contract_address}"
         logging.info(f"[Jupiter] {contract_address}")
         res = session.get(url, timeout=8)
-
         if res.status_code == 200:
             data = res.json()
             token_data = data.get("data", {}).get(contract_address)
@@ -177,16 +161,14 @@ def fetch_token_info(contract_address):
                         "change_1h": "N/A",
                         "dex": "Jupiter",
                     }
-
     except Exception as e:
         logging.error(f"[Jupiter] Error: {e}")
 
-    # ── 3. DexScreener (last resort) ─────────────────────────────────────────
+    # 3. DexScreener last resort
     try:
         url = f"https://api.dexscreener.com/tokens/v1/solana/{contract_address}"
         logging.info(f"[DexScreener] {contract_address}")
         res = session.get(url, timeout=8)
-
         if res.status_code == 200:
             raw = res.json()
             pairs = raw if isinstance(raw, list) else (raw.get("pairs") or [])
@@ -215,11 +197,9 @@ def fetch_token_info(contract_address):
                         "change_1h": f"{change_1h:+.2f}%" if change_1h is not None else "N/A",
                         "dex": dex,
                     }
-
     except Exception as e:
         logging.error(f"[DexScreener] Error: {e}")
 
-    # ── All failed ────────────────────────────────────────────────────────────
     return {
         "error": True,
         "error_msg": (
@@ -229,6 +209,20 @@ def fetch_token_info(contract_address):
             "• Token may not have a liquidity pool yet"
         )
     }
+
+
+# ----- MAIN MENU HELPER -----
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Buy Token", callback_data="buy"),
+         InlineKeyboardButton("🔴 Sell Token", callback_data="sell")],
+        [InlineKeyboardButton("📂 Positions", callback_data="positions"),
+         InlineKeyboardButton("📊 Limit Orders", callback_data="limit_orders")],
+        [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw_menu"),
+         InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
+        [InlineKeyboardButton("👛 Wallet", callback_data="wallet"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="refresh")]
+    ])
 
 
 # ----- START -----
@@ -243,23 +237,16 @@ def start(update, context):
     balance = get_sol_balance(wallet_address)
     users[user_id]["balance"] = balance
 
-    keyboard = [
-        [InlineKeyboardButton("🟢 Buy", callback_data="buy"),
-         InlineKeyboardButton("❓ Help", callback_data="help")],
-        [InlineKeyboardButton("📊 Limit Orders", callback_data="limit_orders"),
-         InlineKeyboardButton("🔄 Refresh", callback_data="refresh")],
-        [InlineKeyboardButton("👛 Wallet", callback_data="wallet")]
-    ]
     text = (
         "🚀 *Welcome to BONKbot* — the fastest and most secure bot for trading any token on Solana!\n\n"
         f"You currently have *{balance:.4f} SOL* in your wallet.\n\n"
         "To start trading, deposit SOL to your *BONKbot wallet address*:\n\n"
         f"`{wallet_address}`\n\n"
         "Once done, tap *Refresh* and your balance will update.\n\n"
-        "*To buy a token:* paste a token contract address from DexScreener, pump.fun, Birdeye, or Meteora.\n\n"
+        "*To buy a token:* tap *Buy Token* and paste a contract address.\n\n"
         "For more info on your wallet and to export your private key, tap *Wallet* below."
     )
-    update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    update.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
 
 
 # ----- BUTTON CALLBACKS -----
@@ -277,88 +264,207 @@ def button(update, context):
         }
     user = users[user_id]
 
-    if data == "wallet":
+    # ── Back to main menu ────────────────────────────────────────────────────
+    if data == "main_menu":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
         balance = get_sol_balance(wallet_address)
         user["balance"] = balance
-        text = f"👛 *Your BONKbot Wallet*\n\n*Address:*\n`{wallet_address}`\n\n*Balance:* `{balance:.4f} SOL`"
-        keyboard = [
-            [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
-            [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
-            [InlineKeyboardButton("🔑 Export Private Key", callback_data="export_seed")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
-        ]
-        query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        text = (
+            "🚀 *BONKbot Main Menu*\n\n"
+            f"👛 Balance: *{balance:.4f} SOL*\n\n"
+            "Select an option below:"
+        )
+        try:
+            query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+        except:
+            query.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
+    # ── Refresh ──────────────────────────────────────────────────────────────
     elif data == "refresh":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
         balance = get_sol_balance(wallet_address)
         user["balance"] = balance
-        text = f"🔄 *Balance Refreshed*\n\n👛 *Wallet:*\n`{wallet_address}`\n\n*Balance:* `{balance:.4f} SOL`"
-        keyboard = [
-            [InlineKeyboardButton("🟢 Buy", callback_data="buy"),
-             InlineKeyboardButton("❓ Help", callback_data="help")],
-            [InlineKeyboardButton("📊 Limit Orders", callback_data="limit_orders"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="refresh")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
-        ]
-        query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        text = (
+            "🔄 *Refreshed!*\n\n"
+            "🚀 *BONKbot Main Menu*\n\n"
+            f"👛 Balance: *{balance:.4f} SOL*\n\n"
+            "Select an option below:"
+        )
+        try:
+            query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+        except:
+            query.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
+    # ── Buy Token ────────────────────────────────────────────────────────────
     elif data == "buy":
         user["awaiting_contract"] = True
-        query.message.reply_text("📈 *Buy Token*\n\nPaste the *token contract address*:", parse_mode="Markdown")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+        ])
+        query.message.reply_text(
+            "🟢 *Buy Token*\n\n"
+            "Enter a *token symbol or contract address* to buy:\n\n"
+            "_Example: paste a CA from DexScreener, pump.fun, Birdeye, or Meteora_",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
 
+    # ── Sell Token ───────────────────────────────────────────────────────────
+    elif data == "sell":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="sell")]
+        ])
+        query.message.reply_text(
+            "🔴 *Sell Token*\n\n"
+            "You do not have any tokens yet.\n\n"
+            "Start trading from the *Buy Token* menu to build your positions.",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Positions ────────────────────────────────────────────────────────────
+    elif data == "positions":
+        user["awaiting_contract"] = True
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+        ])
+        query.message.reply_text(
+            "📂 *Positions*\n\n"
+            "Enter a *token symbol or contract address* to look up:\n\n"
+            "_Example: paste a CA from DexScreener, pump.fun, Birdeye, or Meteora_",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Limit Orders ─────────────────────────────────────────────────────────
+    elif data == "limit_orders":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="limit_orders")]
+        ])
+        query.message.reply_text(
+            "📊 *Limit Orders*\n\n"
+            "You have no active limit orders.\n\n"
+            "Create a limit order from the *Buy / Sell* menu.",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Withdraw Menu ────────────────────────────────────────────────────────
+    elif data == "withdraw_menu":
+        wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
+        balance = get_sol_balance(wallet_address)
+        user["balance"] = balance
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
+            [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_menu")]
+        ])
+        query.message.reply_text(
+            f"💸 *Withdraw*\n\n"
+            f"Available balance: *{balance:.4f} SOL*\n\n"
+            "Choose a withdrawal option:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Withdraw All ─────────────────────────────────────────────────────────
+    elif data == "withdraw_all":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="withdraw_menu")]
+        ])
+        query.message.reply_text(
+            "➖ *Withdraw All SOL*\n\nEnter destination wallet address:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Withdraw X ───────────────────────────────────────────────────────────
+    elif data == "withdraw_x":
+        users[user_id]["awaiting_withdraw_x_amount"] = True
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="withdraw_menu")]
+        ])
+        query.message.reply_text(
+            "➖ *Withdraw X SOL*\n\nEnter the amount of SOL you want to withdraw:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Settings ─────────────────────────────────────────────────────────────
+    elif data == "settings":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="settings")]
+        ])
+        query.message.reply_text(
+            "⚙️ *Settings*\n\n"
+            "Settings configuration coming soon.\n\n"
+            "_Options like transaction speed (Fast / Turbo / Echo), "
+            "slippage, and priority fees will be available here._",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Wallet ───────────────────────────────────────────────────────────────
+    elif data == "wallet":
+        wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
+        balance = get_sol_balance(wallet_address)
+        user["balance"] = balance
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all"),
+             InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
+            [InlineKeyboardButton("🔑 Export Private Key", callback_data="export_seed")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="wallet")]
+        ])
+        query.message.reply_text(
+            f"👛 *Your BONKbot Wallet*\n\n"
+            f"*Address:*\n`{wallet_address}`\n\n"
+            f"*Balance:* `{balance:.4f} SOL`",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+    # ── Help ─────────────────────────────────────────────────────────────────
     elif data == "help":
-        text = (
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+        ])
+        query.message.reply_text(
             "❓ *Help*\n\n"
             "*Which tokens can I trade?*\n"
             "Any SPL token that is a SOL pair on Raydium, pump.fun, Meteora, Moonshot, or Jupiter.\n\n"
             "*Is BONKbot free?*\n"
             "Yes! We charge 1% on transactions. All other actions are free.\n\n"
-            "*Net Profit:* Calculated after fees and price impact."
-        )
-        query.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Close", callback_data="close_wallet")]]),
+            "*Net Profit:* Calculated after fees and price impact.",
+            reply_markup=keyboard,
             parse_mode="Markdown"
         )
 
-    elif data == "limit_orders":
-        keyboard = [
-            [InlineKeyboardButton("➕ Add TP/SL", callback_data="add_tp_sl")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
-        ]
-        query.message.reply_text("📊 *Limit Orders*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif data == "add_tp_sl":
-        query.edit_message_text(
-            "Enter trigger for TP / SL order:\n- Multiple (e.g. 0.8x, 2x)\n- Percentage change (e.g. 5%, -5%)",
-            parse_mode="Markdown"
-        )
-
-    elif data == "withdraw_all":
-        query.message.reply_text("➖ *Withdraw All SOL*\n\nEnter destination wallet address:", parse_mode="Markdown")
-
-    elif data == "withdraw_x":
-        query.message.reply_text("➖ *Withdraw X SOL*\n\nEnter the amount of SOL you want to withdraw:", parse_mode="Markdown")
-        users[user_id]["awaiting_withdraw_x_amount"] = True
-
+    # ── Export Private Key ───────────────────────────────────────────────────
     elif data == "export_seed":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗝️ Reveal Private Key", callback_data="reveal_private_key")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="wallet")]
+        ])
         query.message.reply_text(
             "⚠️ *WARNING:* Keep your private key safe.\nClick below to reveal.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗝️ Reveal Private Key", callback_data="reveal_private_key")],
-                [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
-            ])
+            reply_markup=keyboard
         )
 
     elif data == "reveal_private_key":
         private_key = user.get("private_key", DEFAULT_PRIVATE_KEY)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="wallet")]
+        ])
         query.edit_message_text(
-            f"🗝️ *Your Private Key:*\n`{private_key}`\n⚠️ Keep it safe.",
+            f"🗝️ *Your Private Key:*\n`{private_key}`\n\n⚠️ Keep it safe. Never share it.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Close", callback_data="close_wallet")]])
+            reply_markup=keyboard
         )
 
     elif data == "close_wallet":
@@ -392,7 +498,12 @@ def handle_messages(update, context):
     if user.get("awaiting_withdraw_x_amount"):
         users[user_id]["withdraw_x_amount"] = update.message.text
         users[user_id]["awaiting_withdraw_x_amount"] = False
-        update.message.reply_text("Enter destination wallet address:")
+        update.message.reply_text(
+            "Enter destination wallet address:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Back", callback_data="withdraw_menu")]
+            ])
+        )
 
     elif user.get("awaiting_contract"):
         contract_address = update.message.text.strip()
@@ -401,8 +512,7 @@ def handle_messages(update, context):
         loading_msg = update.message.reply_text("🔍 *Fetching token data...*", parse_mode="Markdown")
         info = fetch_token_info(contract_address)
 
-        # One silent retry — handles Render waking up after idle.
-        # The first request often times out during wake-up; the second always works.
+        # One silent retry — handles Render waking up after idle
         if info.get("error"):
             info = fetch_token_info(contract_address)
 
@@ -414,7 +524,10 @@ def handle_messages(update, context):
         if info.get("error"):
             update.message.reply_text(
                 f"❌ *Token Not Found*\n\n{info.get('error_msg', '')}\n\nContract: `{contract_address}`",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again", callback_data="buy")]]),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Try Again", callback_data="buy"),
+                     InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+                ]),
                 parse_mode="Markdown"
             )
             return
@@ -429,15 +542,16 @@ def handle_messages(update, context):
             f"⏱ *1h Change:* {info['change_1h']}\n\n"
             f"_Contract: `{contract_address}`_"
         )
-        keyboard = [
+        keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Buy 0.1 SOL", callback_data=f"buy_fixed_0.1:{contract_address}"),
              InlineKeyboardButton("Buy 0.5 SOL", callback_data=f"buy_fixed_0.5:{contract_address}")],
             [InlineKeyboardButton("Buy 1.0 SOL", callback_data=f"buy_fixed_1.0:{contract_address}"),
              InlineKeyboardButton("Buy 5.0 SOL", callback_data=f"buy_fixed_5.0:{contract_address}")],
             [InlineKeyboardButton("Buy X SOL", callback_data=f"buy_x:{contract_address}")],
-            [InlineKeyboardButton("❌ Close", callback_data="close_wallet")]
-        ]
-        update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="buy")]
+        ])
+        update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 # ----- MAIN -----
@@ -454,7 +568,8 @@ def main():
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
     print("✅ Bot running!")
-    print("✅ GeckoTerminal (primary) → Jupiter (fallback) → DexScreener (last resort)")
+    print("✅ GeckoTerminal → Jupiter → DexScreener")
+    print("✅ All menu buttons active")
     print("✅ Health check on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
