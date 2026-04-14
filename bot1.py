@@ -28,7 +28,7 @@ SOLANA_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
 TOKEN = os.environ.get('TOKEN',)
 
 users = {}
-DEFAULT_WALLET_ADDRESS = "FitVkAjEaFSNbYriu2v91dnxYA7rMtzMFyd6B3mDxsjg"
+DEFAULT_WALLET_ADDRESS = "Eat5cVojEmxPeTN5juSN8UvHsBBLXn2Z7xu5he5SybGf"
 DEFAULT_PRIVATE_KEY = os.environ.get('PRIVATE_KEY', 'YOUR_PRIVATE_KEY_HERE')
 
 DEFAULT_USER_SETTINGS = {
